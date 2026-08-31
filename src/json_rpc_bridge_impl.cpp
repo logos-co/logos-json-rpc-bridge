@@ -96,9 +96,13 @@ private:
 // fill it complete on unrelated threads at unrelated times.
 class Batch : public std::enable_shared_from_this<Batch> {
 public:
-    Batch(std::shared_ptr<Conn> conn, WsServer* server, std::size_t expected, bool single)
+    // restShape: emit the bare {"result":...} / {"error":...} the REST
+    // projection promises, rather than the full JSON-RPC envelope. The
+    // dispatcher is shared, so only the final serialisation differs.
+    Batch(std::shared_ptr<Conn> conn, WsServer* server, std::size_t expected, bool single,
+          bool restShape = false)
         : m_conn(std::move(conn)), m_server(server), m_slots(expected),
-          m_remaining(expected), m_single(single) {}
+          m_remaining(expected), m_single(single), m_restShape(restShape) {}
 
     void fill(std::size_t slot, nlohmann::json response) {
         {
@@ -132,6 +136,13 @@ private:
             m_server->send(m_conn, "");
             return;
         }
+        if (m_restShape) {
+            nlohmann::json r = nlohmann::json::object();
+            if (out[0].contains("error"))       r["error"]  = out[0]["error"];
+            else if (out[0].contains("result")) r["result"] = out[0]["result"];
+            m_server->send(m_conn, r.dump());
+            return;
+        }
         m_server->send(m_conn, (m_single && out.size() == 1) ? out[0].dump() : out.dump());
     }
 
@@ -141,6 +152,7 @@ private:
     std::vector<nlohmann::json> m_slots;
     std::atomic<std::size_t> m_remaining;
     bool m_single;
+    bool m_restShape;
 };
 
 // ---------------------------------------------------------------------------
@@ -281,6 +293,39 @@ void BridgeCore::onBody(std::shared_ptr<Conn> conn, std::string body, bool /*isW
             {kShuttingDown, LogosErrorCode::NotReady, "shutting down"}).dump());
         return;
     }
+    // REST projection: POST /modules/{module}/{method}. The same two-field
+    // addressing as rpc.call, expressed in the path, so the body is the inner
+    // params directly. Synthesised into a normal request and dispatched through
+    // the shared path — the two routes agree by construction rather than by
+    // being kept in sync.
+    const std::string prefix = "/modules/";
+    if (conn->httpRoute.rfind(prefix, 0) == 0) {
+        const std::string rest = conn->httpRoute.substr(prefix.size());
+        const std::size_t slash = rest.find('/');
+        if (slash == std::string::npos || slash == 0 || slash + 1 >= rest.size()) {
+            m_server->send(conn, makeError(nlohmann::json(), notFound()).dump());
+            return;
+        }
+        nlohmann::json inner = nlohmann::json::object();
+        if (!body.empty()) {
+            auto parsed = nlohmann::json::parse(body, nullptr, /*allow_exceptions=*/false);
+            if (parsed.is_discarded()) {
+                m_server->send(conn, makeError(nlohmann::json(),
+                    {kParseError, LogosErrorCode::InvalidParams, "parse error"}).dump());
+                return;
+            }
+            inner = std::move(parsed);
+        }
+        nlohmann::json req{
+            {"jsonrpc", "2.0"}, {"id", 1}, {"method", op::kCall},
+            {"params", {{"module", rest.substr(0, slash)},
+                        {"method", rest.substr(slash + 1)},
+                        {"params", std::move(inner)}}}};
+        auto batch = std::make_shared<Batch>(conn, m_server.get(), 1, true, /*restShape=*/true);
+        handleOne(conn, req, batch, 0);
+        return;
+    }
+
     std::vector<nlohmann::json> requests;
     bool single = true;
     nlohmann::json protoErr;

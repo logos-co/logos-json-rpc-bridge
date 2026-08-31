@@ -21,13 +21,14 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v27
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
+      # DeterminateSystems, not cachix/install-nix-action: the latter fails on
+      # current macOS runners with eDSRecordAlreadyExists, because nix is
+      # preinstalled and it tries to recreate the nixbld users. This is the same
+      # installer doctests.yml uses.
+      - uses: DeterminateSystems/nix-installer-action@main
       - uses: cachix/cachix-action@v15
         with:
-          name: logos
+          name: logos-co
           skipPush: true
 
       # Three builds, each a distinct failure mode: the plugin itself, the
