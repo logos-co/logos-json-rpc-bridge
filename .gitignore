@@ -1,0 +1,10 @@
+# Codegen output
+generated_code/
+**/generated_code/
+
+# Nix build result symlinks
+result
+result-*
+
+# macOS
+.DS_Store

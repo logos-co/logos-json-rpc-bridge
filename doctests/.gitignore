@@ -1,0 +1,2 @@
+# Doc-test per-spec working directories — keep only the rendered reports.
+/outputs/*/
