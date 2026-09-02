@@ -24,7 +24,8 @@
 
 namespace {
 
-// Subscription continuity needs lp_subscribe_ex, which arrived at protocol 0.9.
+// Subscription continuity needs the per-module status callback, which arrived
+// at protocol 0.9.
 // Below that the bridge still serves; it just cannot tell a client that its
 // subscription was lost, so a provider restart resumes the stream with a gap.
 #if defined(LOGOS_PROTOCOL_VERSION_MINOR) && \

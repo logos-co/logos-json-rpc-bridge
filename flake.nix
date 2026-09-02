@@ -10,7 +10,7 @@
   # runtime value, so there is nothing to name at build time.
   #
   # REQUIRES logos-protocol >= 0.9 for subscription continuity
-  # (lp_subscribe_ex / lp_subscription_generation). Below that the bridge still
+  # (lp_client_set_subscription_status_cb). Below that the bridge still
   # builds and serves, but cannot detect a provider restart, so a subscription
   # silently resumes with an unrecoverable gap instead of terminating and
   # telling the client. The version is not pinned here because the protocol

@@ -229,23 +229,19 @@ public:
                 sink(Delivery{id, up->module, up->event, payload, gen});
         };
 
-#if defined(LOGOS_PROTOCOL_VERSION_MINOR) && \
-    (LOGOS_PROTOCOL_VERSION_MAJOR > 0 ||     \
-     (LOGOS_PROTOCOL_VERSION_MAJOR == 0 && LOGOS_PROTOCOL_VERSION_MINOR >= 9))
-        // Capturing `this` is safe because clear() destroys every handle, and
-        // lp_unsubscribe blocks on the protocol's per-subscription guard until
-        // an in-flight callback finishes — so no status callback can outlive
-        // the hub. ~SubscriptionHub calls clear() for exactly this reason.
-        auto handle = client->subscribeEx(
-            event, std::move(onEvent),
-            [this, module, event](int state, std::uint64_t /*generation*/) {
-                if (state == LP_SUB_LOST) notifyLost(module, event);
-            });
-#else
-        // Protocol < 0.9 has no loss signal, so a provider restart resumes the
-        // stream silently. Documented in README as the reason for the minimum.
+        // The loss watcher is per MODULE, so it is installed once per client
+        // rather than once per subscription — the runtime reports a provider
+        // dying at that granularity, and every event of that module is
+        // affected together. Installing it per (module, event) would deliver N
+        // copies of one loss and terminate the same client subscriptions N
+        // times.
+        //
+        // Below protocol 0.9 there is no loss signal at all and a provider
+        // restart resumes the stream silently. Documented in the README as the
+        // reason for the minimum version.
+        ensureLossWatcher(module, *client);
+
         auto handle = client->subscribe(event, std::move(onEvent));
-#endif
 
         if (!handle.valid()) {
             std::lock_guard<std::mutex> lock(m_subMu);
@@ -278,6 +274,40 @@ public:
     void removeSubscriberEverywhere(std::uint64_t subscriberId) {
         std::lock_guard<std::mutex> lock(m_subMu);
         for (auto& kv : m_up) removeSubscriberLocked(kv.second, subscriberId);
+    }
+
+    // Install this module's loss watcher exactly once.
+    //
+    // Capturing `this` is safe because clear() destroys every handle and the
+    // hub outlives the registry it was built from; ~SubscriptionHub calls
+    // clear() for exactly this reason.
+    void ensureLossWatcher(const std::string& module, logos::LpClient& client) {
+        {
+            std::lock_guard<std::mutex> lock(m_subMu);
+            if (!m_watched.insert(module).second) return;
+        }
+        client.onSubscriptionStatus(
+            [this, module](logos::SubStatus state, std::uint64_t /*generation*/) {
+                // Held is impossible here — the bridge never sets a manual
+                // policy — but treating it as a loss anyway is the safe
+                // reading: it means the same thing to a downstream client, and
+                // a silent fall-through would resume a stream with a hole.
+                if (state == logos::SubStatus::Lost || state == logos::SubStatus::Held ||
+                    state == logos::SubStatus::Abandoned)
+                    notifyModuleLost(module);
+            });
+    }
+
+    // The provider for `module` went away, which takes every subscription to it
+    // down at once. Terminate each affected event's subscribers.
+    void notifyModuleLost(const std::string& module) {
+        std::vector<std::string> events;
+        {
+            std::lock_guard<std::mutex> lock(m_subMu);
+            for (const auto& kv : m_up)
+                if (kv.second->module == module) events.push_back(kv.second->event);
+        }
+        for (const std::string& ev : events) notifyLost(module, ev);
     }
 
     // Called when the upstream reports the provider went away. Signals every
@@ -354,6 +384,8 @@ private:
     }
 
     ClientRegistry* m_clients;
+    // Modules whose loss watcher is already installed. Guarded by m_subMu.
+    std::set<std::string> m_watched;
     Sink m_sink;
     OnLost m_onLost;
     mutable std::mutex m_subMu;
