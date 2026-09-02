@@ -1,0 +1,459 @@
+name: "Calling Modules and Subscribing to Events from Outside"
+output: json-rpc-bridge.md
+release: ""
+
+intro: |
+  The `json_rpc_bridge` module gives a Logos node an outside edge. Without it,
+  every consumer of a module's methods or events has to be a loaded module
+  itself — which leaves scripts, dashboards, test harnesses and other language
+  runtimes with no way in at all.
+
+  You start it with a config JSON naming exactly which modules to expose, and it
+  stands up an HTTP + WebSocket server speaking JSON-RPC 2.0. HTTP carries method
+  calls; WebSocket carries method calls *and* event subscriptions, with the
+  server pushing events as they happen.
+
+  This doc-test proves the whole thing end-to-end on the commit under test:
+
+  1. Create a **provider** module inline. It has a method that succeeds, a
+     method that reports an application-level failure, and an event it emits on
+     demand.
+  2. Build the bridge from **this repo**, run both under a `logoscore` daemon,
+     and start the bridge over an explicit allowlist.
+  3. Call the provider over HTTP — with **by-name** params and with
+     **positional** params — and through the REST projection, asserting all
+     three agree.
+  4. Prove the security posture: a browser `Origin` is refused, a non-JSON
+     content type is refused, and a denied method is byte-identical to a module
+     that does not exist.
+  5. Open **two concurrent WebSocket clients**, subscribe both, trigger the
+     event, and assert each receives it under its own caller-assigned
+     subscription id.
+
+  A green run means an external client drove a real module through the bridge,
+  two clients received the same event independently, and none of the refusals
+  leaked which one it was.
+
+what_you_build: "A provider module plus the `json_rpc_bridge` (built from this repo) running together under a `logoscore` daemon; `curl` drives method calls over HTTP and two concurrent `websocat` clients receive a pushed event."
+
+what_you_learn:
+  - How to expose a module's methods and events to external clients
+  - The `rpc.call` shape, and why module and method are separate fields rather than a dotted name
+  - That by-name and positional params are both accepted and mean the same thing
+  - How event subscriptions work over WebSocket, with client-assigned subscription ids
+  - Why an application-level failure arrives as a JSON-RPC `result`, not an `error`
+  - How the bridge refuses browser origins, and why a loopback bind is not enough on its own
+
+prerequisites:
+  - |
+    **Nix** with flakes enabled. Install from [nixos.org](https://nixos.org/download.html), then enable flakes:
+
+    ```bash
+    mkdir -p ~/.config/nix
+    echo 'experimental-features = nix-command flakes' >> ~/.config/nix/nix.conf
+    ```
+
+    Verify: `nix flake --help >/dev/null 2>&1 && echo "Flakes enabled"`
+  - "**git** — nix flakes only see files tracked by git."
+  - "**curl** and **websocat** — to drive HTTP and WebSocket."
+  - "A Linux or macOS machine."
+
+sections:
+  - title: "Create a provider module"
+    step: true
+    text: |
+      A module becomes reachable through the bridge by being named in the
+      bridge's `expose.modules` list — there is nothing to implement and no
+      interface to adopt. This provider is an ordinary `universal` (pure-C++)
+      module with three things worth exercising:
+
+      ```cpp
+      std::string        greet(const std::string& who);   // plain success
+      StdLogosResult     mustFail();                      // application failure
+      int64_t            fire(int64_t value);             // emits an event
+      logos_events:
+          void tick(int64_t value);
+      ```
+
+      `mustFail()` matters more than it looks: a module that answers
+      `{success:false}` has **answered the call**. The bridge must deliver that
+      in the JSON-RPC `result`, not convert it to an `error` — otherwise a
+      caller cannot tell a business rejection from a transport failure.
+    steps:
+      - title: "provider_module/metadata.json"
+        text: "`interface: universal`, no dependencies, and one declared event."
+        file:
+          path: provider_module/metadata.json
+          language: json
+          content: |
+            {
+              "name": "provider_module",
+              "version": "1.0.0",
+              "type": "core",
+              "category": "example",
+              "description": "Example provider: a method, a failing method, and an event",
+              "main": "provider_module_plugin",
+              "interface": "universal",
+              "dependencies": [],
+
+              "nix": {
+                "packages": { "build": [], "runtime": [] },
+                "external_libraries": [],
+                "cmake": { "find_packages": [], "extra_sources": [] }
+              }
+            }
+
+      - title: "provider_module/src/provider_module_impl.h"
+        file:
+          path: provider_module/src/provider_module_impl.h
+          language: cpp
+          content: |
+            #pragma once
+
+            #include <cstdint>
+            #include <string>
+
+            #include <logos_module_context.h>
+            #include <logos_result.h>
+
+            class ProviderModuleImpl : public LogosModuleContext {
+            public:
+                std::string greet(const std::string& who);
+
+                // Answers the call and reports an application-level failure.
+                // The bridge must surface this as a JSON-RPC result.
+                StdLogosResult mustFail();
+
+                // Emits tick(value) and returns the value back.
+                int64_t fire(int64_t value);
+
+            logos_events:
+                void tick(int64_t value);
+            };
+
+      - title: "provider_module/src/provider_module_impl.cpp"
+        file:
+          path: provider_module/src/provider_module_impl.cpp
+          language: cpp
+          content: |
+            #include "provider_module_impl.h"
+
+            #include "logos_sdk.h"
+
+            std::string ProviderModuleImpl::greet(const std::string& who) {
+                return "hello, " + who;
+            }
+
+            StdLogosResult ProviderModuleImpl::mustFail() {
+                return {false, {}, "the widget was not frobnicated"};
+            }
+
+            int64_t ProviderModuleImpl::fire(int64_t value) {
+                tick(value);
+                return value;
+            }
+
+      - title: "provider_module/CMakeLists.txt"
+        file:
+          path: provider_module/CMakeLists.txt
+          language: cmake
+          content: |
+            cmake_minimum_required(VERSION 3.14)
+            project(ProviderModulePlugin LANGUAGES CXX)
+
+            if(DEFINED ENV{LOGOS_MODULE_BUILDER_ROOT})
+                include($ENV{LOGOS_MODULE_BUILDER_ROOT}/cmake/LogosModule.cmake)
+            elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/LogosModule.cmake")
+                include(cmake/LogosModule.cmake)
+            else()
+                message(FATAL_ERROR "LogosModule.cmake not found")
+            endif()
+
+            logos_module(
+                NAME provider_module
+                SOURCES
+                    src/provider_module_impl.h
+                    src/provider_module_impl.cpp
+            )
+
+      - title: "provider_module/flake.nix"
+        file:
+          path: provider_module/flake.nix
+          language: nix
+          content: |
+            {
+              inputs.logos-module-builder.url = "github:logos-co/logos-module-builder";
+              outputs = inputs@{ logos-module-builder, ... }:
+                logos-module-builder.lib.mkLogosModule {
+                  src = ./.;
+                  configFile = ./metadata.json;
+                  flakeInputs = inputs;
+                };
+            }
+
+      - title: "Build the provider"
+        run: |
+          cd provider_module && git init -q && git add -A
+          nix build .#lgx -o ../provider-lgx
+          cd ..
+        check_file: "provider-lgx"
+
+  - title: "Build and install both modules"
+    step: true
+    text: |
+      Build `logoscore` and `lgpm`, seed the modules directory with the
+      capability module that ships with `logoscore`, then install the provider
+      and the bridge.
+    steps:
+      - title: "Build logoscore"
+        run: "nix build 'github:logos-co/logos-logoscore-cli' --out-link ./logos"
+        check_file: "logos/bin/logoscore"
+
+      - title: "Build lgpm"
+        run: "nix build 'github:logos-co/logos-package-manager#cli' -o lgpm"
+        check_file: "lgpm/bin/lgpm"
+
+      - title: "Build the bridge from this repo"
+        run: "nix build 'github:logos-co/logos-json-rpc-bridge{release}#lgx' -o bridge-lgx"
+        check_file: "bridge-lgx"
+
+      - title: "Seed the modules directory"
+        run: |
+          mkdir -p modules
+          cp -RL ./logos/modules/. ./modules/
+        check_file: "modules/capability_module/manifest.json"
+
+      - title: "Install the provider"
+        run: "./lgpm/bin/lgpm --modules-dir ./modules --allow-unsigned install --file provider-lgx/*.lgx"
+        expect_contains:
+          - "Installed to:"
+
+      - title: "Install the bridge"
+        run: "./lgpm/bin/lgpm --modules-dir ./modules --allow-unsigned install --file bridge-lgx/*.lgx"
+        expect_contains:
+          - "Installed to:"
+
+  - title: "Start the node and the bridge"
+    step: true
+    text: |
+      Start the daemon, load both modules, then `start` the bridge over an
+      explicit allowlist. There is **no wildcard**: every module reachable from
+      outside is named here, and `provider_module`'s `mustFail` is left exposed
+      while a `denied` method name is not — which the refusal test below uses.
+
+      Note what `start` returns: the resolved exposure, the bound endpoints, and
+      `subscription_continuity`, which tells you whether the running protocol can
+      report a provider restart.
+    steps:
+      - title: "Start the daemon"
+        run: |
+          nohup ./logos/bin/logoscore --config-dir . -D -m ./modules > daemon.log 2>&1 &
+          sleep 6
+        code_block: "logoscore -D -m ./modules"
+
+      - title: "Load both modules"
+        run: |
+          ./logos/bin/logoscore --config-dir . load-module provider_module
+          ./logos/bin/logoscore --config-dir . load-module json_rpc_bridge
+        code_block: |
+          logoscore load-module provider_module
+          logoscore load-module json_rpc_bridge
+        expect_contains:
+          - "provider_module"
+          - "json_rpc_bridge"
+
+      - title: "Start the bridge"
+        run: |
+          ./logos/bin/logoscore --config-dir . call json_rpc_bridge start '{"http":{"port":8645},"expose":{"modules":[{"name":"provider_module","methods":{"deny":["denied"]}}]}}'
+          sleep 2
+        code_block: |
+          logoscore call json_rpc_bridge start '{
+            "http": {"port": 8645},
+            "expose": {"modules": [
+              {"name": "provider_module", "methods": {"deny": ["denied"]}}
+            ]}
+          }'
+        expect_contains:
+          - "http://127.0.0.1:8645"
+          - "ws://127.0.0.1:8645/ws"
+
+      - title: "The node is healthy"
+        run: "curl -s --max-time 15 http://127.0.0.1:8645/healthz"
+        expect_contains:
+          - '"status":"ok"'
+
+      - title: "Discovery lists the provider's methods and events"
+        run: "curl -s --max-time 15 http://127.0.0.1:8645/modules"
+        expect_contains:
+          - "provider_module"
+          - "greet"
+          - "tick"
+
+  - title: "Call methods over HTTP"
+    step: true
+    text: |
+      `rpc.call` takes **`module` and `method` as separate fields** — never a
+      dotted `module.method` name. That mirrors the transport spec's own
+      `Request`, keeps calls symmetric with subscriptions (which take `module`
+      and `event`), and means there is no split rule to get wrong.
+
+      The inner `params` may be an object keyed by parameter name, or a
+      positional array. Both are shown below and must produce the same answer.
+    steps:
+      - title: "By-name params"
+        run: |
+          curl -s --max-time 20 -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"rpc.call","params":{"module":"provider_module","method":"greet","params":{"who":"world"}}}' \
+            http://127.0.0.1:8645/rpc
+        expect_contains:
+          - '"result":"hello, world"'
+
+      - title: "Positional params mean the same thing"
+        run: |
+          curl -s --max-time 20 -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":2,"method":"rpc.call","params":{"module":"provider_module","method":"greet","params":["world"]}}' \
+            http://127.0.0.1:8645/rpc
+        expect_contains:
+          - '"result":"hello, world"'
+
+      - title: "The REST projection agrees"
+        text: "The same two-field addressing, expressed in the path."
+        run: |
+          curl -s --max-time 20 -H 'Content-Type: application/json' \
+            -d '{"who":"world"}' \
+            http://127.0.0.1:8645/modules/provider_module/greet
+        expect_contains:
+          - "hello, world"
+
+      - title: "An application failure arrives as a result, not an error"
+        text: |
+          `mustFail()` returned `{success:false, error:"..."}`. The module
+          **answered** — so this is a successful call carrying a business
+          failure, and it must not be dressed up as a JSON-RPC error. A client
+          that cannot tell those apart cannot retry correctly.
+        run: |
+          curl -s --max-time 20 -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":3,"method":"rpc.call","params":{"module":"provider_module","method":"mustFail"}}' \
+            http://127.0.0.1:8645/rpc
+        expect_contains:
+          - '"result"'
+          - "the widget was not frobnicated"
+        expect_not_contains:
+          - '"error"'
+
+  - title: "The refusals"
+    step: true
+    text: |
+      Three properties that are easy to get wrong and silent when you do.
+    steps:
+      - title: "A denied method and a module that does not exist are byte-identical"
+        text: |
+          `denied` is excluded by config; `no_such_module` was never loaded. If
+          these answered differently, the bridge would be an oracle for what a
+          node is running and what it has been told to hide.
+        run: |
+          echo "--- denied method ---"
+          curl -s --max-time 15 -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":4,"method":"rpc.call","params":{"module":"provider_module","method":"denied"}}' \
+            http://127.0.0.1:8645/rpc
+          echo
+          echo "--- module that does not exist ---"
+          curl -s --max-time 15 -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":4,"method":"rpc.call","params":{"module":"no_such_module","method":"denied"}}' \
+            http://127.0.0.1:8645/rpc
+        expect_contains:
+          - "METHOD_NOT_FOUND"
+
+      - title: "A browser origin is refused"
+        text: |
+          A loopback bind is **not** a boundary against a browser: browsers do
+          not apply same-origin policy to WebSockets and send no preflight, so
+          without this check any page the operator visits could drive the node.
+        run: |
+          curl -s -o /dev/null -w '%{http_code}\n' --max-time 15 \
+            -H 'Content-Type: application/json' -H 'Origin: http://evil.example' \
+            -d '{"jsonrpc":"2.0","id":5,"method":"rpc.ping"}' \
+            http://127.0.0.1:8645/rpc
+        expect_contains:
+          - "403"
+
+      - title: "A non-JSON content type is refused"
+        text: "Requiring `application/json` forces a CORS preflight that fails, since no CORS headers are ever sent."
+        run: |
+          curl -s -o /dev/null -w '%{http_code}\n' --max-time 15 \
+            -H 'Content-Type: text/plain' --data 'x' http://127.0.0.1:8645/rpc
+        expect_contains:
+          - "415"
+
+  - title: "Subscribe to events from two clients at once"
+    step: true
+    text: |
+      The WebSocket side carries the same JSON-RPC envelope plus subscriptions
+      and server-pushed events.
+
+      **The client assigns the subscription id**, per the transport spec, so it
+      can correlate without waiting for the ack. Two clients subscribe to the
+      same event with *different* ids; one upstream subscription is made and
+      fanned out, and each client sees the event under its own id.
+    steps:
+      - title: "Two concurrent subscribers receive the same event"
+        run: |
+          nix build --impure --expr 'let f = builtins.getFlake "github:NixOS/nixpkgs/nixos-unstable"; in f.legacyPackages.${builtins.currentSystem}.websocat' -o ws 2>/dev/null || true
+          WS=./ws/bin/websocat
+          ( printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"rpc.subscribe","params":{"subscription":"alpha","module":"provider_module","event":"tick"}}'; sleep 8 ) \
+            | $WS -t ws://127.0.0.1:8645/ws > client-a.txt 2>&1 &
+          ( printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"rpc.subscribe","params":{"subscription":"beta","module":"provider_module","event":"tick"}}'; sleep 8 ) \
+            | $WS -t ws://127.0.0.1:8645/ws > client-b.txt 2>&1 &
+          sleep 3
+          curl -s --max-time 15 -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":9,"method":"rpc.call","params":{"module":"provider_module","method":"fire","params":{"value":42}}}' \
+            http://127.0.0.1:8645/rpc
+          echo
+          wait
+          echo "--- client A ---"; cat client-a.txt
+          echo "--- client B ---"; cat client-b.txt
+        code_block: |
+          # client A
+          websocat -t ws://127.0.0.1:8645/ws <<< '{"jsonrpc":"2.0","id":1,"method":"rpc.subscribe",
+            "params":{"subscription":"alpha","module":"provider_module","event":"tick"}}'
+
+          # client B, same event, its own id
+          websocat -t ws://127.0.0.1:8645/ws <<< '{"jsonrpc":"2.0","id":1,"method":"rpc.subscribe",
+            "params":{"subscription":"beta","module":"provider_module","event":"tick"}}'
+
+          # trigger it
+          curl -s -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":9,"method":"rpc.call",
+                 "params":{"module":"provider_module","method":"fire","params":{"value":42}}}' \
+            http://127.0.0.1:8645/rpc
+        expect_contains:
+          - '"subscription":"alpha"'
+          - '"subscription":"beta"'
+          - "rpc.event"
+
+  - title: "Stop"
+    step: true
+    steps:
+      - title: "Stop the bridge and the daemon"
+        run: |
+          ./logos/bin/logoscore --config-dir . call json_rpc_bridge stop || true
+          ./logos/bin/logoscore --config-dir . stop || true
+        code_block: |
+          logoscore call json_rpc_bridge stop
+          logoscore stop
+
+conclusion: |
+  An external HTTP client called a module's methods — by name and positionally —
+  and got the same answer through the REST projection. An application-level
+  failure came back as a `result`, keeping a business rejection distinguishable
+  from a transport failure. Two independent WebSocket clients subscribed to one
+  event with their own ids and both received it from a single upstream
+  subscription. And the three refusals — a denied method, a browser origin, a
+  non-JSON body — all answered without revealing which one they were.
+
+  One thing this doc-test does not yet assert: what a client sees when a
+  provider **restarts** underneath a live subscription. The bridge terminates
+  the affected subscriptions and pushes `rpc.subscription_terminated`, rather
+  than silently resuming a stream with a hole in it — but that needs
+  logos-protocol ≥ 0.9, and `getInfo()`'s `subscription_continuity` flag reports
+  whether the running node has it.

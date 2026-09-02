@@ -1,0 +1,27 @@
+{
+  "name": "json_rpc_bridge",
+  "display_name": "JSON-RPC Bridge",
+  "version": "0.1.0",
+  "description": "Exposes configured modules' method calls and event subscriptions to external clients over HTTP and WebSocket",
+  "author": "Logos Core Team",
+  "type": "core",
+  "interface": "universal",
+  "concurrency": "multi",
+  "category": "system",
+  "main": "json_rpc_bridge_plugin",
+  "dependencies": [],
+
+  "nix": {
+    "packages": {
+      "build": ["pkg-config"],
+      "runtime": ["libwebsockets", "openssl", "nlohmann_json"]
+    },
+    "external_libraries": [],
+    "cmake": {
+      "find_packages": [],
+      "extra_sources": [],
+      "extra_include_dirs": [],
+      "extra_link_libraries": []
+    }
+  }
+}

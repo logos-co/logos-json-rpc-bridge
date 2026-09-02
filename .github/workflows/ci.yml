@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # libwebsockets is available=false for the mingw cross set in this nixpkgs,
+    # so there is no Windows job to add. Linux and macOS are the platforms this
+    # module actually builds for.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      # DeterminateSystems, not cachix/install-nix-action: the latter fails on
+      # current macOS runners with eDSRecordAlreadyExists, because nix is
+      # preinstalled and it tries to recreate the nixbld users. This is the same
+      # installer doctests.yml uses.
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: cachix/cachix-action@v15
+        with:
+          name: logos-co
+          skipPush: true
+
+      # Three builds, each a distinct failure mode: the plugin itself, the
+      # packaged artifact (which catches a broken manifest or a missing icon
+      # that the plugin build never touches), and the unit suite.
+      - name: Build the plugin
+        run: nix build .# -L
+
+      - name: Build the .lgx package
+        run: nix build .#lgx -L
+
+      - name: Unit tests
+        run: nix flake check -L
