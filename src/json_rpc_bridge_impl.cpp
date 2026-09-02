@@ -24,12 +24,26 @@
 
 namespace {
 
-// Subscription continuity needs lp_subscribe_ex, which arrived at protocol 0.9.
-// Below that the bridge still serves; it just cannot tell a client that its
+// Subscription continuity needs the per-module status callback.
+// Without it the bridge still serves; it just cannot tell a client that its
 // subscription was lost, so a provider restart resumes the stream with a gap.
-#if defined(LOGOS_PROTOCOL_VERSION_MINOR) && \
-    (LOGOS_PROTOCOL_VERSION_MAJOR > 0 ||     \
-     (LOGOS_PROTOCOL_VERSION_MAJOR == 0 && LOGOS_PROTOCOL_VERSION_MINOR >= 9))
+//
+// NOT A VERSION GUARD, and the version spelling this replaces was actively
+// wrong. Protocol MINOR 0.9 was revised in place, so the first cut and the
+// revision BOTH report MINOR 9 while exporting disjoint sets — `MINOR >= 9` is
+// true of a protocol that has no per-module status callback at all.
+//
+// The failure that guard produced was the quiet kind: it gates no call site, so
+// nothing fails to build. It only mis-answers. getInfo() would report
+// subscription_continuity:true while the underlying onSubscriptionStatus had
+// degraded to the SDK's warn-once path, so notifyModuleLost never fires and a
+// client that trusted the flag gets an unannounced hole in its stream.
+//
+// LOGOS_LP_HAS_CLIENT_SUBSCRIPTION_STATE is logos-cpp-sdk's own answer to the
+// same question, defined in logos_lp_client.h, which reaches us through
+// logos_sdk.h. Deferring to it means this flag cannot disagree with whether the
+// call it describes actually compiled.
+#if defined(LOGOS_LP_HAS_CLIENT_SUBSCRIPTION_STATE)
 constexpr bool kHasSubscriptionContinuity = true;
 #else
 constexpr bool kHasSubscriptionContinuity = false;
