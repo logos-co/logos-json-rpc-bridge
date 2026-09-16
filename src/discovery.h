@@ -1,191 +1,248 @@
 #pragma once
 
-// Per-module interface cache and exposure resolution.
+// Discovery IO: fetch each exposed module's interface, retry modules that are
+// not up yet, and rediscover after a provider loss. Every decision is in
+// discovery_model.h; every upstream call goes through DiscoveryIo.
 //
-// Discovery does NOT use LpClient::getMethods(): on the default (qt_remote)
-// transport that is a stub returning an empty array, so a bridge built on it
-// would report every module as having no methods and no events. Instead it
-// makes an ordinary by-name call to `getPluginInterface`, which ModuleProxy
-// answers ahead of its authorization gate and which returns methods AND events
-// in one array, events tagged "type":"event".
+// The live report comes from an ordinary by-name `getPluginInterface` call,
+// which ModuleProxy answers ahead of its authorization gate, methods AND
+// events in one array. LpClient::getMethods() is a stub on qt_remote.
 //
-// That answer is the target module's own unvalidated self-report, not something
-// the runtime checked. So everything derived from it is presented to clients as
-// a bridge-derived VIEW, never as the module's contract.
+// Calls are asynchronous and each continuation is posted to the pump, so a
+// module that is down never holds a pump thread for the call timeout.
 
+#include <chrono>
+#include <cstdint>
+#include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
-#include <vector>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 
 #include "bridge_config.h"
-#include "upstream.h"
+#include "discovery_model.h"
 
 namespace bridge {
 
-struct ModuleInterface {
-    bool resolved = false;
-    // False when the module reported no "type":"event" entries at all. Legacy
-    // hand-written Qt plugins never tag events, so this is "we cannot know",
-    // not "it has none" — the distinction the per-module events.allow list
-    // exists to let an operator override.
-    bool eventsDeclared = false;
-    std::vector<std::string> methods;
-    std::vector<std::string> events;
-    // Parameter names per method, in declaration order, for translating a
-    // by-name params object into the positional array the ABI takes.
-    std::map<std::string, std::vector<std::string>> methodParams;
+struct CallOutcome {
+    nlohmann::json value;
+    std::string error;   // CallError code; empty on success
+    bool ok() const { return error.empty(); }
+};
+
+struct DiscoveryIo {
+    using Done = std::function<void(CallOutcome)>;
+    using Job = std::function<void()>;
+    // Start a zero-argument upstream call; `done` runs at most once, on any thread.
+    std::function<void(const std::string& module, const std::string& method,
+                       int timeoutMs, Done done)> invoke;
+    // Queue work on the pump; false once it is stopping.
+    std::function<bool(Job)> post;
+    // Run `job` after `delay`, replacing any timer already set for `key`.
+    std::function<bool(const std::string& key, std::chrono::milliseconds delay, Job job)> schedule;
 };
 
 class Discovery {
 public:
-    Discovery(ClientRegistry* clients, const BridgeConfig* config)
-        : m_clients(clients), m_config(config) {}
+    static constexpr int kCallTimeoutMs = 5000;
 
-    // Fetch and cache one module's interface. Blocking; call from the pump or
-    // the warm thread, never from the socket thread. Doubles as the client
-    // warm-up: it is the call that triggers LpClient's lazy create.
-    void refresh(const std::string& module) {
-        auto client = m_clients->get(module);
-        if (!client) return;
-        logos::CallError err;
-        nlohmann::json iface = client->invoke("getPluginInterface",
-                                              nlohmann::json::array(), &err,
-                                              /*timeout_ms=*/5000);
-        if (!err.ok() || !iface.is_array()) return;
+    Discovery(const BridgeConfig* config, DiscoveryIo io)
+        : m_config(config), m_io(std::move(io)) {
+        for (const auto& em : m_config->modules)
+            m_slots[em.name].view = std::make_shared<const ModuleView>(pendingView(em.name));
+    }
 
-        ModuleInterface mi;
-        mi.resolved = true;
-        for (const auto& entry : iface) {
-            if (!entry.is_object() || !entry.contains("name") || !entry["name"].is_string())
-                continue;
-            const std::string name = entry["name"].get<std::string>();
-            const bool isEvent = entry.value("type", std::string()) == "event";
-            if (isEvent) {
-                mi.eventsDeclared = true;
-                mi.events.push_back(name);
-                continue;
-            }
-            mi.methods.push_back(name);
-            std::vector<std::string> params;
-            if (entry.contains("parameters") && entry["parameters"].is_array()) {
-                for (const auto& p : entry["parameters"]) {
-                    if (p.is_object() && p.contains("name") && p["name"].is_string())
-                        params.push_back(p["name"].get<std::string>());
-                    else
-                        params.emplace_back();
-                }
-            }
-            mi.methodParams.emplace(name, std::move(params));
+    // Warm-up: one refresh per exposed module, off the request path. The first
+    // call is also what triggers LpClient's lazy (blocking) create.
+    void start() {
+        for (const auto& em : m_config->modules) {
+            const std::string name = em.name;
+            m_io.post([this, name] { refresh(name); });
         }
-        std::lock_guard<std::mutex> lock(m_mu);
-        m_cache[module] = std::move(mi);
     }
 
-    ModuleInterface get(const std::string& module) const {
-        std::lock_guard<std::mutex> lock(m_mu);
-        auto it = m_cache.find(module);
-        return it == m_cache.end() ? ModuleInterface{} : it->second;
+    // Start a discovery of `module`. Call from the pump, never the socket thread.
+    void refresh(const std::string& module) {
+        std::uint64_t attempt = 0;
+        {
+            std::lock_guard<std::mutex> lock(m_mu);
+            Slot* s = slot(module);
+            if (!s) return;
+            attempt = ++s->attempt;
+            s->inFlight = true;
+            s->retryArmed = false;
+        }
+        call(module, attempt, "getPluginInterface",
+             [this, module, attempt](CallOutcome r) { onInterface(module, attempt, std::move(r)); });
     }
 
-    // Is this (module, method) callable by an external client?
-    //
-    // Returns a single boolean on purpose. Not-exposed, denied, unknown module
-    // and unknown method must be indistinguishable from outside, so the caller
-    // has exactly one answer to turn into exactly one error.
+    // The provider went away (the subscription hub's per-module watcher).
+    void onProviderLost(const std::string& module) {
+        std::chrono::milliseconds delay{};
+        {
+            std::lock_guard<std::mutex> lock(m_mu);
+            Slot* s = slot(module);
+            if (!s) return;
+            ++s->attempt;   // anything in flight answered for the provider that just left
+            s->inFlight = false;
+            s->view = std::make_shared<const ModuleView>(staleView(*s->view));
+            s->failures = 1;
+            s->retryArmed = true;
+            delay = retryDelay(s->failures);
+        }
+        scheduleRefresh(module, delay);
+    }
+
+    // A (re)establishment of the module's subscriptions. A higher generation
+    // than the last one seen means the provider came back: rediscover now.
+    void onProviderArmed(const std::string& module, std::uint64_t generation) {
+        {
+            std::lock_guard<std::mutex> lock(m_mu);
+            Slot* s = slot(module);
+            if (!s) return;
+            const bool restarted = s->armedGeneration != 0 && generation > s->armedGeneration;
+            if (generation > s->armedGeneration) s->armedGeneration = generation;
+            if (!restarted && !s->view->stale) return;
+            ++s->attempt;
+            s->inFlight = false;
+            s->retryArmed = true;
+            s->view = std::make_shared<const ModuleView>(staleView(*s->view));
+        }
+        scheduleRefresh(module, std::chrono::milliseconds(0));
+    }
+
+    // A bridged call found the module unavailable. The loss watcher only runs
+    // for modules with subscriptions, so this is how the rest go stale.
+    void onCallUnavailable(const std::string& module) {
+        std::chrono::milliseconds delay{};
+        {
+            std::lock_guard<std::mutex> lock(m_mu);
+            Slot* s = slot(module);
+            if (!s || s->inFlight || s->retryArmed) return;
+            s->view = std::make_shared<const ModuleView>(staleView(*s->view));
+            s->failures = 1;
+            s->retryArmed = true;
+            delay = retryDelay(s->failures);
+        }
+        scheduleRefresh(module, delay);
+    }
+
+    // The current snapshot; a pending view for a module that is not exposed.
+    std::shared_ptr<const ModuleView> view(const std::string& module) const {
+        std::lock_guard<std::mutex> lock(m_mu);
+        auto it = m_slots.find(module);
+        if (it == m_slots.end()) return std::make_shared<const ModuleView>(pendingView(module));
+        return it->second.view;
+    }
+
     bool methodPermitted(const std::string& module, const std::string& method) const {
-        const ExposedModule* em = m_config->find(module);
-        if (!em) return false;
-        if (!em->methods.permits(method)) return false;
-        // An unresolved interface is not a reason to refuse: the module may
-        // simply not be up yet, and refusing would make "starting" look like
-        // "forbidden". The upstream call answers authoritatively.
-        const ModuleInterface mi = get(module);
-        if (!mi.resolved || mi.methods.empty()) return true;
-        for (const auto& m : mi.methods)
-            if (m == method) return true;
-        return false;
+        return bridge::methodPermitted(*m_config, *view(module), method);
     }
 
-    // Same, for events. Stricter than methods, because subscribing to an event
-    // name the module does not declare is a SILENT no-op upstream: the
-    // subscription arms, reports healthy, and never fires. Pre-validating here
-    // is the only place a client's typo can be turned into an error.
     bool eventPermitted(const std::string& module, const std::string& event) const {
-        const ExposedModule* em = m_config->find(module);
-        if (!em) return false;
-        if (!em->events.permits(event)) return false;
-        const ModuleInterface mi = get(module);
-        // Not declared (a legacy Qt plugin) or not yet resolved: fall back to
-        // the operator's explicit allow list, which is exactly the override
-        // that case exists for. With no allow list there is nothing to check
-        // against and we accept.
-        if (!mi.resolved || !mi.eventsDeclared) return true;
-        for (const auto& e : mi.events)
-            if (e == event) return true;
-        return false;
+        return bridge::eventPermitted(*m_config, *view(module), event);
     }
 
-    // Translate a by-name params object into the positional array the ABI
-    // requires. Returns false when a name is not in the method's signature, or
-    // when the signature is unknown and so cannot be ordered.
     bool toPositional(const std::string& module, const std::string& method,
                       const nlohmann::json& byName, nlohmann::json* out,
                       std::string* badPath) const {
-        const ModuleInterface mi = get(module);
-        auto it = mi.methodParams.find(method);
-        if (it == mi.methodParams.end()) {
-            *badPath = method;
-            return false;
-        }
-        const auto& order = it->second;
-        for (auto kv = byName.begin(); kv != byName.end(); ++kv) {
-            bool known = false;
-            for (const auto& n : order) if (n == kv.key()) { known = true; break; }
-            if (!known) { *badPath = kv.key(); return false; }
-        }
-        nlohmann::json arr = nlohmann::json::array();
-        for (const auto& n : order)
-            arr.push_back(byName.contains(n) ? byName.at(n) : nlohmann::json());
-        *out = std::move(arr);
-        return true;
+        return bridge::toPositional(*view(module), method, byName, out, badPath);
     }
 
-    // The bridge-derived view of one module, filtered to what is exposed.
+    // Null when the module is not exposed.
     nlohmann::json describe(const std::string& module) const {
         const ExposedModule* em = m_config->find(module);
         if (!em) return nlohmann::json();
-        const ModuleInterface mi = get(module);
-        nlohmann::json methods = nlohmann::json::array();
-        for (const auto& m : mi.methods)
-            if (em->methods.permits(m)) methods.push_back(m);
-        nlohmann::json events = nlohmann::json::array();
-        for (const auto& e : mi.events)
-            if (em->events.permits(e)) events.push_back(e);
-        return nlohmann::json{
-            {"module", module},
-            {"resolved", mi.resolved},
-            {"events_declared", mi.eventsDeclared},
-            {"methods", std::move(methods)},
-            {"events", std::move(events)},
-            {"source", "getPluginInterface"},
-            {"authoritative", false},
-        };
+        return describeView(*em, *view(module));
     }
 
     nlohmann::json listModules() const {
         nlohmann::json out = nlohmann::json::array();
-        for (const auto& em : m_config->modules) out.push_back(describe(em.name));
+        for (const auto& em : m_config->modules) out.push_back(listView(em, *view(em.name)));
         return out;
     }
 
 private:
-    ClientRegistry* m_clients;
+    struct Slot {
+        std::shared_ptr<const ModuleView> view;
+        std::uint64_t attempt = 0;          // bumps per refresh; older completions are dropped
+        bool inFlight = false;
+        bool retryArmed = false;
+        int failures = 0;                   // consecutive attempts without a live report
+        std::uint64_t armedGeneration = 0;  // highest subscription generation seen
+    };
+
+    Slot* slot(const std::string& module) {
+        auto it = m_slots.find(module);
+        return it == m_slots.end() ? nullptr : &it->second;
+    }
+
+    bool current(const std::string& module, std::uint64_t attempt) const {
+        std::lock_guard<std::mutex> lock(m_mu);
+        auto it = m_slots.find(module);
+        return it != m_slots.end() && it->second.attempt == attempt;
+    }
+
+    // Issue one upstream call and resume on the pump. A stale attempt is not
+    // resumed, and a refused post means the bridge is stopping.
+    void call(const std::string& module, std::uint64_t attempt, const std::string& method,
+              std::function<void(CallOutcome)> next) {
+        m_io.invoke(module, method, kCallTimeoutMs,
+            [this, module, attempt, next = std::move(next)](CallOutcome r) {
+                m_io.post([this, module, attempt, next, r = std::move(r)]() mutable {
+                    if (current(module, attempt)) next(std::move(r));
+                });
+            });
+    }
+
+    void onInterface(const std::string& module, std::uint64_t attempt, CallOutcome r) {
+        LiveReport live;
+        if (!r.ok() || !parseLiveReport(r.value, &live)) {
+            missed(module, attempt);
+            return;
+        }
+        publish(module, attempt, untypedView(*view(module), std::move(live)));
+    }
+
+    // No live report: keep the view (pending, or stale) and retry with backoff.
+    void missed(const std::string& module, std::uint64_t attempt) {
+        std::chrono::milliseconds delay{};
+        {
+            std::lock_guard<std::mutex> lock(m_mu);
+            Slot* s = slot(module);
+            if (!s || s->attempt != attempt) return;
+            s->inFlight = false;
+            ++s->failures;
+            s->retryArmed = true;
+            delay = retryDelay(s->failures);
+        }
+        scheduleRefresh(module, delay);
+    }
+
+    void publish(const std::string& module, std::uint64_t attempt, ModuleView next) {
+        std::lock_guard<std::mutex> lock(m_mu);
+        Slot* s = slot(module);
+        if (!s || s->attempt != attempt) return;
+        next.generation = s->view->generation + 1;   // counted here, not from the caller's snapshot
+        next.stale = false;
+        s->view = std::make_shared<const ModuleView>(std::move(next));
+        s->inFlight = false;
+        s->failures = 0;
+    }
+
+    void scheduleRefresh(const std::string& module, std::chrono::milliseconds delay) {
+        m_io.schedule(module, delay, [this, module] {
+            m_io.post([this, module] { refresh(module); });
+        });
+    }
+
     const BridgeConfig* m_config;
+    DiscoveryIo m_io;
     mutable std::mutex m_mu;
-    std::map<std::string, ModuleInterface> m_cache;
+    std::map<std::string, Slot> m_slots;
 };
 
 } // namespace bridge

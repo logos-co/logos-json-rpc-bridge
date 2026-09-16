@@ -11,8 +11,11 @@ logos_test(
     TEST_SOURCES
         main.cpp
         test_bridge_config.cpp
+        test_discovery_io.cpp
+        test_discovery_model.cpp
         test_error_map.cpp
         test_peer_slots.cpp
+        test_retry_scheduler.cpp
         test_rpc_dispatcher.cpp
         test_subscription_table.cpp
     EXTRA_INCLUDES

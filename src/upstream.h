@@ -111,11 +111,15 @@ public:
     // Drain and join. Queued-but-unstarted jobs are dropped: the connections
     // they would answer are going away in the same teardown.
     void stop() {
+        // Dropped jobs die unlocked: one may hold a client's last reference, and
+        // lp_client_destroy waits for callbacks that may be inside submit().
+        std::deque<Job> dropped;
         {
             std::lock_guard<std::mutex> lock(m_mu);
             m_stop.store(true);
-            m_queue.clear();
+            dropped.swap(m_queue);
         }
+        dropped.clear();
         m_cv.notify_all();
         for (auto& t : m_threads)
             if (t.joinable()) t.join();
@@ -170,11 +174,18 @@ public:
     using OnLost = std::function<void(std::uint64_t subscriberId,
                                       const std::string& module,
                                       const std::string& event)>;
+    using OnModuleStatus = std::function<void(const std::string& module,
+                                              logos::SubStatus state,
+                                              std::uint64_t generation)>;
 
     SubscriptionHub(ClientRegistry* clients, Sink sink, OnLost onLost)
         : m_clients(clients), m_sink(std::move(sink)), m_onLost(std::move(onLost)) {}
 
     ~SubscriptionHub() { clear(); }
+
+    // Also told every status of a watched module (discovery rediscovers on it).
+    // Set once, before the first subscribe; it runs on the delivery thread.
+    void setModuleStatusHook(OnModuleStatus hook) { m_statusHook = std::move(hook); }
 
     // Add a subscriber to (module, event), creating the upstream subscription
     // on first use. MUST be called from the pump: lp_subscribe blocks on the
@@ -286,8 +297,10 @@ public:
             std::lock_guard<std::mutex> lock(m_subMu);
             if (!m_watched.insert(module).second) return;
         }
+        // The ONE status callback this client can hold: a second installer
+        // would replace it, so every other listener goes through m_statusHook.
         client.onSubscriptionStatus(
-            [this, module](logos::SubStatus state, std::uint64_t /*generation*/) {
+            [this, module](logos::SubStatus state, std::uint64_t generation) {
                 // Held is impossible here — the bridge never sets a manual
                 // policy — but treating it as a loss anyway is the safe
                 // reading: it means the same thing to a downstream client, and
@@ -295,6 +308,7 @@ public:
                 if (state == logos::SubStatus::Lost || state == logos::SubStatus::Held ||
                     state == logos::SubStatus::Abandoned)
                     notifyModuleLost(module);
+                if (m_statusHook) m_statusHook(module, state, generation);
             });
     }
 
@@ -388,6 +402,7 @@ private:
     std::set<std::string> m_watched;
     Sink m_sink;
     OnLost m_onLost;
+    OnModuleStatus m_statusHook;   // written once before any watcher exists
     mutable std::mutex m_subMu;
     std::map<Key, std::shared_ptr<Up>> m_up;
     bool m_closed = false;

@@ -12,6 +12,7 @@
 #include "bridge_config.h"
 #include "discovery.h"
 #include "error_map.h"
+#include "retry_scheduler.h"
 #include "rpc_dispatcher.h"
 #include "upstream.h"
 #include "ws_server.h"
@@ -62,12 +63,18 @@ public:
     BridgeCore(BridgeConfig cfg, std::string origin)
         : m_cfg(std::move(cfg)),
           m_clients(std::move(origin)),
-          m_discovery(&m_clients, &m_cfg),
+          m_discovery(&m_cfg, discoveryIo()),
           m_hub(&m_clients,
                 [this](const Delivery& d) { onEvent(d); },
                 [this](std::uint64_t id, const std::string& m, const std::string& e) {
                     onSubscriptionLost(id, m, e);
-                }) {}
+                }) {
+        m_hub.setModuleStatusHook(
+            [this](const std::string& m, logos::SubStatus s, std::uint64_t generation) {
+                if (s == logos::SubStatus::Armed) m_discovery.onProviderArmed(m, generation);
+                else m_discovery.onProviderLost(m);
+            });
+    }
 
     bool start(std::string* error);
     void shutdown();
@@ -85,11 +92,13 @@ private:
     void abandonSubscribe(const std::shared_ptr<Conn>& conn, const std::string& key,
                           std::uint64_t sid);
     std::string onGet(const std::string& path, int* status);
+    DiscoveryIo discoveryIo();
 
     BridgeConfig m_cfg;
     ClientRegistry m_clients;
     Discovery m_discovery;
     CallPump m_pump;
+    RetryScheduler m_scheduler;
     SubscriptionHub m_hub;
     std::unique_ptr<WsServer> m_server;
 
@@ -173,8 +182,31 @@ private:
 
 // ---------------------------------------------------------------------------
 
+// Discovery's only way upstream. Used after start(), so the members the
+// lambdas reach are all constructed by then.
+DiscoveryIo BridgeCore::discoveryIo() {
+    DiscoveryIo io;
+    io.invoke = [this](const std::string& module, const std::string& method, int timeoutMs,
+                       DiscoveryIo::Done done) {
+        auto client = m_clients.get(module);
+        if (!client) { done(CallOutcome{nlohmann::json(), "object_unavailable"}); return; }
+        client->invokeAsyncResult(method, nlohmann::json::array(),
+            [done](nlohmann::json value, const logos::CallError& e) {
+                if (e.ok()) done(CallOutcome{std::move(value), std::string()});
+                else done(CallOutcome{nlohmann::json(), e.code});
+            }, timeoutMs);
+    };
+    io.post = [this](DiscoveryIo::Job job) { return m_pump.submit(std::move(job)); };
+    io.schedule = [this](const std::string& key, std::chrono::milliseconds delay,
+                         DiscoveryIo::Job job) {
+        return m_scheduler.schedule(key, delay, std::move(job));
+    };
+    return io;
+}
+
 bool BridgeCore::start(std::string* error) {
     m_pump.start(2);
+    m_scheduler.start();
 
     ServerHooks hooks;
     hooks.onBody = [this](std::shared_ptr<Conn> c, std::string b, bool ws) {
@@ -195,17 +227,12 @@ bool BridgeCore::start(std::string* error) {
     hooks.checkBearer = [](const std::string&) { return false; };
 
     m_server = std::make_unique<WsServer>(m_cfg, std::move(hooks));
-    if (!m_server->start(error)) { m_pump.stop(); return false; }
+    if (!m_server->start(error)) { m_scheduler.stop(); m_pump.stop(); return false; }
 
     m_startedAt = std::chrono::steady_clock::now();
 
-    // Warm every exposed target off the request path. This is also what
-    // populates the interface cache, because the call that fetches it is the
-    // same call that triggers LpClient's lazy (and blocking) create.
-    for (const auto& em : m_cfg.modules) {
-        const std::string name = em.name;
-        m_pump.submit([this, name] { m_discovery.refresh(name); });
-    }
+    // Warm every exposed target off the request path; unresolved ones retry.
+    m_discovery.start();
     return true;
 }
 
@@ -216,6 +243,7 @@ bool BridgeCore::start(std::string* error) {
 // unload grace period makes easy to hit.
 void BridgeCore::shutdown() {
     m_draining.store(true);
+    m_scheduler.stop();   // no further timed rediscoveries
     m_hub.clear();        // no further event deliveries
     m_clients.close();    // no further completions
     m_pump.stop();        // no further submissions
@@ -418,10 +446,13 @@ void BridgeCore::handleOne(const std::shared_ptr<Conn>& conn, const nlohmann::js
         const int timeout = m_cfg.limits.callTimeoutMs;
         auto client = m_clients.get(t.module);
         if (!client) { batch->fill(slot, makeError(id, notFound())); return; }
-        const bool queued = m_pump.submit([client, t, args, id, batch, slot, timeout] {
+        Discovery* discovery = &m_discovery;
+        const bool queued = m_pump.submit([client, t, args, id, batch, slot, timeout, discovery] {
             client->invokeAsyncResult(t.method, args,
-                [batch, slot, id](nlohmann::json value, const logos::CallError& e) {
+                [batch, slot, id, discovery, module = t.module](nlohmann::json value,
+                                                                const logos::CallError& e) {
                     if (!e.ok()) {
+                        if (e.code == "object_unavailable") discovery->onCallUnavailable(module);
                         batch->fill(slot, makeError(id, mapCallError(e.code, e.message)));
                         return;
                     }
