@@ -1,7 +1,13 @@
 #include "ws_server.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
+
+#if !defined(_WIN32)
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 namespace bridge {
 namespace {
@@ -10,6 +16,11 @@ constexpr const char* kWsProtocol = "jsonrpc-bridge.v1";
 constexpr const char* kJson = "application/json";
 // lws's own default: how long a response may go without the reader taking a slice.
 constexpr int kHttpWriteTimeoutSecs = 15;
+// A lingering socket's deadline, drain interval and reads per drain; how many may linger.
+constexpr lws_usec_t kLingerUs = 5 * LWS_US_PER_SEC;
+constexpr lws_usec_t kLingerTickUs = 20 * LWS_US_PER_MS;
+constexpr int kLingerReadsPerTick = 16;
+constexpr std::size_t kMaxLingering = 16;
 
 std::string hdr(struct lws* wsi, enum lws_token_indexes tok) {
     const int n = lws_hdr_total_length(wsi, tok);
@@ -24,7 +35,107 @@ WsServer* serverOf(struct lws* wsi) {
     return static_cast<WsServer*>(lws_context_user(lws_get_context(wsi)));
 }
 
+const unsigned char* bytes(const char* s) { return reinterpret_cast<const unsigned char*>(s); }
+
+RequestFraming framing(struct lws* wsi) {
+    RequestFraming f;
+    f.transferEncoding = lws_hdr_total_length(wsi, WSI_TOKEN_HTTP_TRANSFER_ENCODING) > 0;
+    f.hasLength = lws_hdr_total_length(wsi, WSI_TOKEN_HTTP_CONTENT_LENGTH) > 0;
+    f.length = hdr(wsi, WSI_TOKEN_HTTP_CONTENT_LENGTH);
+    f.bodyMethod = lws_hdr_total_length(wsi, WSI_TOKEN_POST_URI) > 0
+#if defined(LWS_WITH_HTTP_UNCOMMON_HEADERS)
+        || lws_hdr_total_length(wsi, WSI_TOKEN_PUT_URI) > 0
+        || lws_hdr_total_length(wsi, WSI_TOKEN_PATCH_URI) > 0
+#endif
+        ;
+    return f;
+}
+
+// lws_return_http_status's page, with Connection: close when the socket closes after it.
+int writeStatus(struct lws* wsi, unsigned code, bool close) {
+    char page[96];
+    const int len = std::snprintf(page, sizeof(page),
+        "<html><head><meta charset=utf-8></head><body><h1>%u</h1></body></html>", code);
+    unsigned char buf[LWS_PRE + 1024];
+    unsigned char* start = buf + LWS_PRE;
+    unsigned char* p = start;
+    unsigned char* end = buf + sizeof(buf);
+    if (lws_add_http_header_status(wsi, code, &p, end) ||
+        lws_add_http_header_by_token(wsi, WSI_TOKEN_HTTP_CONTENT_TYPE, bytes("text/html"), 9, &p, end) ||
+        lws_add_http_header_content_length(wsi, static_cast<lws_filepos_t>(len), &p, end) ||
+        (close && lws_add_http_header_by_token(wsi, WSI_TOKEN_CONNECTION, bytes("close"), 5, &p, end)) ||
+        lws_finalize_http_header(wsi, &p, end) || end - p < len)
+        return 1;
+    std::memcpy(p, page, static_cast<std::size_t>(len));
+    p += len;
+    const int n = static_cast<int>(p - start);
+    return lws_write(wsi, start, static_cast<std::size_t>(n), LWS_WRITE_HTTP) != n ? 1 : 0;
+}
+
 } // namespace
+
+// Answer without reading the body. lws's discard of an unread body can swallow the
+// next request, so a request that declares one gets Connection: close and a close.
+int WsServer::refuse(struct lws* wsi, unsigned code) {
+    if (lws_get_network_wsi(wsi) != wsi) {   // an h2 stream: its body is framed
+        if (lws_return_http_status(wsi, code, nullptr)) return -1;
+        return lws_http_transaction_completed(wsi) ? -1 : 0;
+    }
+    const bool close = bodyFollows(framing(wsi));
+    if (writeStatus(wsi, code, close)) return -1;
+    if (!close) return lws_http_transaction_completed(wsi) ? -1 : 0;
+    linger(wsi);
+    return -1;
+}
+
+// lws 4.3.5 closes right after shutdown(SHUT_WR); its own linger state is unreachable.
+// A dup keeps the socket open, unless lws still holds part of the answer.
+void WsServer::linger(struct lws* wsi) {
+#if !defined(_WIN32)
+    if (m_lingering.size() >= kMaxLingering) drainLingering(false);   // reap peers that closed
+    if (lws_partial_buffered(wsi) || m_lingering.size() >= kMaxLingering) return;
+    const int fd = ::dup(lws_get_socket_fd(wsi));
+    if (fd < 0) return;
+    ::shutdown(fd, SHUT_WR);
+    m_lingering.push_back({fd, lws_now_usecs() + kLingerUs});
+    if (m_lingering.size() == 1)
+        lws_sul_schedule(m_ctx, 0, &m_lingerTimer.sul, &WsServer::onLingerTimer, kLingerTickUs);
+#else
+    (void)wsi;
+#endif
+}
+
+void WsServer::onLingerTimer(lws_sorted_usec_list_t* sul) {
+    WsServer* self = lws_container_of(sul, LingerTimer, sul)->owner;
+    self->drainLingering(false);
+    if (!self->m_lingering.empty())
+        lws_sul_schedule(self->m_ctx, 0, sul, &WsServer::onLingerTimer, kLingerTickUs);
+}
+
+// Drops what each lingering peer sent; closes on its EOF, an error, or the deadline.
+void WsServer::drainLingering(bool closeAll) {
+#if !defined(_WIN32)
+    const lws_usec_t now = lws_now_usecs();
+    char buf[16384];
+    for (auto it = m_lingering.begin(); it != m_lingering.end();) {
+        bool done = closeAll || now >= it->until;
+        for (int i = 0; !done && i < kLingerReadsPerTick; ++i) {
+            const ssize_t n = ::recv(it->fd, buf, sizeof(buf), MSG_DONTWAIT);
+            if (n > 0) continue;
+            done = n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR);
+            break;
+        }
+        if (!done) {
+            ++it;
+            continue;
+        }
+        ::close(it->fd);
+        it = m_lingering.erase(it);
+    }
+#else
+    (void)closeAll;
+#endif
+}
 
 // ---------------------------------------------------------------------------
 
@@ -46,6 +157,7 @@ bool WsServer::start(std::string* error) {
     info.user = this;
     info.options = LWS_SERVER_OPTION_HTTP_HEADERS_SECURITY_BEST_PRACTICES_ENFORCE;
     info.count_threads = 1;
+    m_lingerTimer.owner = this;
 
     m_ctx = lws_create_context(&info);
     if (!m_ctx) {
@@ -66,6 +178,8 @@ void WsServer::stop() {
     m_stop.store(true);
     lws_cancel_service(m_ctx);          // the one cross-thread-safe call
     if (m_thread.joinable()) m_thread.join();
+    lws_sul_cancel(&m_lingerTimer.sul);
+    drainLingering(true);
     lws_context_destroy(m_ctx);         // only after the service thread is gone
     m_ctx = nullptr;
     std::lock_guard<std::mutex> lock(m_connMu);
@@ -242,9 +356,9 @@ int WsServer::dispatch(struct lws* wsi, enum lws_callback_reasons reason,
         const std::string path = in ? std::string(static_cast<const char*>(in), len)
                                     : std::string("/");
         if (!hostAllowed(wsi) || !originAllowed(wsi))
-            return lws_return_http_status(wsi, HTTP_STATUS_FORBIDDEN, nullptr);
+            return refuse(wsi, HTTP_STATUS_FORBIDDEN);
         if (!authorized(wsi))
-            return lws_return_http_status(wsi, HTTP_STATUS_UNAUTHORIZED, nullptr);
+            return refuse(wsi, HTTP_STATUS_UNAUTHORIZED);
 
         const std::string method = hdr(wsi, WSI_TOKEN_POST_URI).empty() ? "GET" : "POST";
         if (method == "GET") {
@@ -255,6 +369,8 @@ int WsServer::dispatch(struct lws* wsi, enum lws_callback_reasons reason,
             // place. Writing headers here as well produced two header blocks,
             // the second of which the client read as the response body.
             auto c = attach(wsi, false);
+            // A body sent with a GET is never read either; see refuse().
+            c->httpClose = lws_get_network_wsi(wsi) == wsi && bodyFollows(framing(wsi));
             {
                 std::lock_guard<std::mutex> lock(c->mu);
                 c->httpStatus = status;
@@ -269,7 +385,9 @@ int WsServer::dispatch(struct lws* wsi, enum lws_callback_reasons reason,
         // caller, and no CORS headers are ever emitted, so the preflight fails.
         const std::string ctype = hdr(wsi, WSI_TOKEN_HTTP_CONTENT_TYPE);
         if (ctype.rfind(kJson, 0) != 0)
-            return lws_return_http_status(wsi, 415, nullptr);
+            return refuse(wsi, HTTP_STATUS_UNSUPPORTED_MEDIA_TYPE);
+        // lws reads neither chunked bodies nor a body without a Content-Length.
+        if (!usableLength(framing(wsi))) return refuse(wsi, HTTP_STATUS_LENGTH_REQUIRED);
 
         auto c = attach(wsi, false);
         c->httpRoute = path;
@@ -278,7 +396,7 @@ int WsServer::dispatch(struct lws* wsi, enum lws_callback_reasons reason,
 
     case LWS_CALLBACK_HTTP_BODY: {
         auto c = lookup(wsi);
-        if (!c) return 0;
+        if (!c || c->httpRoute.empty()) return 0;   // only a POST has a route
         if (c->httpBody.size() + len > static_cast<std::size_t>(m_cfg.limits.maxBodyBytes))
             return 1;   // over the cap: refuse before buffering more
         c->httpBody.append(static_cast<const char*>(in), len);
@@ -287,7 +405,10 @@ int WsServer::dispatch(struct lws* wsi, enum lws_callback_reasons reason,
 
     case LWS_CALLBACK_HTTP_BODY_COMPLETION: {
         auto c = lookup(wsi);
-        if (!c) return 0;
+        if (!c || c->httpRoute.empty()) return 0;
+        // The answer takes as long as the upstream call. lws clears its content
+        // timeout here itself, except after an explicit Content-Length: 0.
+        lws_set_timeout(wsi, NO_PENDING_TIMEOUT, 0);
         if (m_hooks.onBody) m_hooks.onBody(c, std::move(c->httpBody), false);
         c->httpBody.clear();
         return 0;   // the response arrives later, via send()
@@ -310,7 +431,9 @@ int WsServer::dispatch(struct lws* wsi, enum lws_callback_reasons reason,
             }
             unsigned char buf[LWS_PRE + 512], *p = buf + LWS_PRE, *end = buf + sizeof(buf);
             if (lws_add_http_common_headers(wsi, static_cast<unsigned>(status), kJson,
-                                            body.size(), &p, end))
+                                            body.size(), &p, end) ||
+                (c->httpClose && lws_add_http_header_by_token(wsi, WSI_TOKEN_CONNECTION,
+                                                              bytes("close"), 5, &p, end)))
                 return 1;
             if (lws_finalize_write_http_header(wsi, buf + LWS_PRE, &p, end)) return 1;
             c->httpOut = std::make_unique<HttpBodyWriter>(std::move(body));
@@ -329,6 +452,10 @@ int WsServer::dispatch(struct lws* wsi, enum lws_callback_reasons reason,
             return 0;
         }
         c->httpOut.reset();
+        if (c->httpClose) {
+            linger(wsi);
+            return -1;
+        }
         return lws_http_transaction_completed(wsi) ? -1 : 0;
     }
 

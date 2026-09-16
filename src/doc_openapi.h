@@ -33,10 +33,13 @@ inline json requestBodyRef(const char* name) {
     return json{{"$ref", std::string("#/components/requestBodies/") + name}};
 }
 
-// lws answers these itself, with no body.
+// Refusals before routing, each a small HTML page.
 inline json gateResponses(bool post) {
     json r{{"401", responseRef("Unauthorized")}, {"403", responseRef("Forbidden")}};
-    if (post) r["415"] = responseRef("UnsupportedMediaType");
+    if (post) {
+        r["411"] = responseRef("LengthRequired");
+        r["415"] = responseRef("UnsupportedMediaType");
+    }
     return r;
 }
 
@@ -193,15 +196,22 @@ inline json components() {
                        {"required", {"error"}},
                        {"additionalProperties", false}}},
     };
+    const json htmlPage{{"text/html", {{"schema", {{"type", "string"}}}}}};
     json responses{
         {"Unauthorized", {{"description", "auth.mode is bearer and the request carries no valid "
-                                          "`Authorization: Bearer` token. No body."}}},
+                                          "`Authorization: Bearer` token."},
+                          {"content", htmlPage}}},
         {"Forbidden", {{"description", "Refused before routing: the Host header is not a "
                                        "loopback literal this bridge bound, or the Origin is not "
-                                       "in http.allowed_origins. No body."}}},
+                                       "in http.allowed_origins."},
+                       {"content", htmlPage}}},
+        {"LengthRequired", {{"description", "The request states no valid Content-Length, or has a "
+                                            "Transfer-Encoding: the bridge reads no chunked body. "
+                                            "The connection is closed."},
+                            {"content", htmlPage}}},
         {"UnsupportedMediaType", {{"description", "The Content-Type is not application/json, "
-                                                  "which is required even for an empty body. No "
-                                                  "body."}}},
+                                                  "which is required even for an empty body."},
+                                  {"content", htmlPage}}},
         {"UntypedCallResult", callResponse(json::object())},
     };
     json requestBodies{
@@ -223,9 +233,10 @@ constexpr const char* kInfoDescription =
     "exposed module method with its parameters as the body, typed from the module's canonical "
     "LIDL contract when it has one (x-logos-untyped marks names-only modules). `POST /rpc` "
     "speaks JSON-RPC 2.0 (see rpc.discover). Every route checks Host and Origin and sends no "
-    "CORS headers. Operations cover what this bridge lets you call; component schemas cover "
-    "every record in each contract, and x-logos-modules gives each module's status, digests "
-    "and exposure.";
+    "CORS headers. A refusal (401, 403, 411, 415) leaves the request body unread, so when the "
+    "request declares a body the connection closes after the refusal. Operations cover what "
+    "this bridge lets you call; component schemas cover every record in each contract, and "
+    "x-logos-modules gives each module's status, digests and exposure.";
 
 } // namespace openapi
 

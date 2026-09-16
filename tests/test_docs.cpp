@@ -273,7 +273,7 @@ LOGOS_TEST(openapi_module_paths_have_the_documented_request_and_responses) {
     LOGOS_ASSERT_EQ(body[1]["maxItems"], json(2));
 
     const json& responses = op["responses"];
-    LOGOS_ASSERT_EQ(responses.size(), static_cast<size_t>(4));
+    LOGOS_ASSERT_EQ(responses.size(), static_cast<size_t>(5));   // 200, 401, 403, 411, 415
     const json& ok = responses["200"]["content"]["application/json"]["schema"]["oneOf"];
     LOGOS_ASSERT_EQ(ok[0], j(R"({"type":"object","required":["result"],"additionalProperties":false,
         "properties":{"result":{"anyOf":[{"$ref":"#/components/schemas/sample.Point"},
@@ -287,20 +287,22 @@ LOGOS_TEST(openapi_module_paths_have_the_documented_request_and_responses) {
     LOGOS_ASSERT_EQ(doc["components"]["schemas"]["JsonRpcErrorResponse"]["properties"]["id"],
                     j(R"({"$ref":"#/components/schemas/JsonRpcId"})"));
 
-    // lws answers these itself, with no body; every path references the same three.
+    // lws writes these refusals as HTML pages; every path references the same components.
     LOGOS_ASSERT_EQ(responses["401"], j(R"({"$ref":"#/components/responses/Unauthorized"})"));
     LOGOS_ASSERT_EQ(responses["403"], j(R"({"$ref":"#/components/responses/Forbidden"})"));
+    LOGOS_ASSERT_EQ(responses["411"], j(R"({"$ref":"#/components/responses/LengthRequired"})"));
     LOGOS_ASSERT_EQ(responses["415"], j(R"({"$ref":"#/components/responses/UnsupportedMediaType"})"));
-    for (const char* name : {"Unauthorized", "Forbidden", "UnsupportedMediaType"}) {
+    for (const char* name : {"Unauthorized", "Forbidden", "LengthRequired", "UnsupportedMediaType"}) {
         const json& r = doc["components"]["responses"][name];
         LOGOS_ASSERT_TRUE(r.contains("description"));
-        LOGOS_ASSERT_FALSE(r.contains("content"));
+        LOGOS_ASSERT_EQ(r["content"], j(R"({"text/html":{"schema":{"type":"string"}}})"));
     }
     for (const auto& item : doc["paths"])
         for (auto verb = item.begin(); verb != item.end(); ++verb) {
             const json& rs = verb.value()["responses"];
             LOGOS_ASSERT_EQ(rs["401"], responses["401"]);
             LOGOS_ASSERT_EQ(rs["403"], responses["403"]);
+            LOGOS_ASSERT_EQ(rs.contains("411"), verb.key() == "post");
             LOGOS_ASSERT_EQ(rs.contains("415"), verb.key() == "post");
         }
 }
@@ -349,6 +351,7 @@ LOGOS_TEST(openapi_has_the_fixed_routes) {
                     j(R"({"$ref":"#/components/schemas/JsonRpcError"})"));
     const json& rpc = paths["/rpc"]["post"];
     LOGOS_ASSERT_EQ(rpc["requestBody"]["required"], json(true));
+    LOGOS_ASSERT_EQ(rpc["responses"]["411"], j(R"({"$ref":"#/components/responses/LengthRequired"})"));
     LOGOS_ASSERT_EQ(rpc["responses"]["415"], j(R"({"$ref":"#/components/responses/UnsupportedMediaType"})"));
     LOGOS_ASSERT_EQ(rpc["responses"]["200"]["content"]["application/json"]["schema"]["oneOf"][1]["type"], json("array"));
 }

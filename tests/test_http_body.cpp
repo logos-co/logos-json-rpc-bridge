@@ -1,4 +1,5 @@
-// HttpBodyWriter: the slices ws_server.cpp writes an HTTP response in.
+// HttpBodyWriter: the slices ws_server.cpp writes an HTTP response in; and
+// RequestFraming: when a request's body follows its headers.
 
 #include <logos_test.h>
 
@@ -9,6 +10,13 @@
 using namespace bridge;
 
 namespace {
+
+RequestFraming withLength(const std::string& length) {
+    RequestFraming f;
+    f.hasLength = true;
+    f.length = length;
+    return f;
+}
 
 // Every slice in order, joined; `count` and `lastFlags` say how they came.
 std::string drain(HttpBodyWriter& w, size_t* count, size_t* lastFlags) {
@@ -63,4 +71,45 @@ LOGOS_TEST(an_empty_body_is_one_empty_final_slice) {
     LOGOS_ASSERT_TRUE(last);
     LOGOS_ASSERT_EQ(s.second, static_cast<size_t>(0));
     LOGOS_ASSERT_TRUE(w.done());
+}
+
+LOGOS_TEST(without_a_length_only_a_post_put_or_patch_has_a_body) {
+    RequestFraming get;
+    LOGOS_ASSERT_FALSE(bodyFollows(get));
+    RequestFraming post;
+    post.bodyMethod = true;
+    LOGOS_ASSERT_TRUE(bodyFollows(post));   // lws reads it as 100 MiB
+    LOGOS_ASSERT_FALSE(usableLength(post));
+}
+
+LOGOS_TEST(a_zero_length_is_no_body_and_a_usable_one) {
+    for (const char* zero : {"0", "00"}) {
+        RequestFraming f = withLength(zero);
+        f.bodyMethod = true;
+        LOGOS_ASSERT_FALSE(bodyFollows(f));
+        LOGOS_ASSERT_TRUE(usableLength(f));
+    }
+}
+
+// Anything but zeros may be followed by bytes lws reads as a body.
+LOGOS_TEST(any_other_length_declares_a_body) {
+    for (const char* length : {"5", "1048577", "5, 5", "0, 0", "abc", "-1", ""}) {
+        LOGOS_ASSERT_TRUE(bodyFollows(withLength(length)));
+    }
+    LOGOS_ASSERT_TRUE(usableLength(withLength("5")));
+    LOGOS_ASSERT_TRUE(usableLength(withLength("1048577")));   // the size cap is checked as it arrives
+    for (const char* length : {"5, 5", "0, 0", "abc", "-1", "+5", " 5", ""}) {
+        LOGOS_ASSERT_FALSE(usableLength(withLength(length)));
+    }
+}
+
+// Chunked or not, and whatever Content-Length says beside it.
+LOGOS_TEST(a_transfer_encoding_always_declares_a_body_the_bridge_does_not_read) {
+    RequestFraming get;
+    get.transferEncoding = true;
+    LOGOS_ASSERT_TRUE(bodyFollows(get));
+    RequestFraming both = withLength("0");
+    both.transferEncoding = true;
+    LOGOS_ASSERT_TRUE(bodyFollows(both));
+    LOGOS_ASSERT_FALSE(usableLength(both));
 }
