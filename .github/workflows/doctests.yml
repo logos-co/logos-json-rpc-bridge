@@ -3,10 +3,13 @@ name: Doc-Tests
 # Runs the executable json-rpc-bridge doc-test end-to-end via the shared doctest CLI,
 # building the bridge from the commit under test:
 #   - json-rpc-bridge.test.yaml   creates one provider module inline, builds the
-#     json_rpc_bridge from this repo, runs both under a logoscore daemon, calls
-#     the provider over HTTP with by-name and positional params, asserts the
-#     refusals are non-revealing, and receives a pushed event on two concurrent
-#     WebSocket clients.
+#     json_rpc_bridge and its json-rpc-bridge-docs renderer from this repo, runs
+#     the bridge and the provider under a logoscore daemon, waits for the
+#     provider's lidl() contract to be served, calls it over HTTP (by name,
+#     positionally and through <module>.<method> aliases), checks the refusals
+#     are byte-identical, checks the three self-description documents against
+#     the renderer's, and receives a pushed event on two concurrent WebSocket
+#     clients.
 #
 # ──────────────────────────────────────────────────────────────────────────────
 # One-time setup required for the clickable report links to work:
@@ -204,7 +207,7 @@ jobs:
               `${marker}\n` +
               `### 📊 json-rpc-bridge doc-test report\n\n` +
               `The json_rpc_bridge built from this commit, run with one inline ` +
-              `provider modules through a logoscore daemon — rendered alongside the ` +
+              `provider module through a logoscore daemon — rendered alongside the ` +
               `commands actually run and their output (updated each run, commit ` +
               `\`${context.sha.slice(0,7)}\`):\n\n` +
               `${links}\n\n` +

@@ -3,11 +3,14 @@
 # Execute the json-rpc-bridge doc-test end-to-end and regenerate its Markdown.
 #
 # Spec:
-#   - json-rpc-bridge.test.yaml   builds the json_rpc_bridge module from this repo
-#                             plus one inline provider module, runs both under a
-#                             logoscore daemon, calls the provider over HTTP, and
-#                             receives a pushed event on two concurrent
-#                             WebSocket clients.
+#   - json-rpc-bridge.test.yaml   builds the json_rpc_bridge module and its
+#                             json-rpc-bridge-docs renderer from this repo plus
+#                             one inline provider module, runs the bridge and the
+#                             provider under a logoscore daemon, calls the
+#                             provider over HTTP (typed, by name, positionally and
+#                             through aliases), compares the served documents with
+#                             the renderer's, and receives a pushed event on two
+#                             concurrent WebSocket clients.
 #
 # The runner is the shared `doctest` CLI (https://github.com/logos-co/logos-doctest),
 # invoked directly via its flake. `doctest run` executes every command in a temp

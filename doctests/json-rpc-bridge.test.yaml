@@ -11,39 +11,51 @@ intro: |
   You start it with a config JSON naming exactly which modules to expose, and it
   stands up an HTTP + WebSocket server speaking JSON-RPC 2.0. HTTP carries method
   calls; WebSocket carries method calls *and* event subscriptions, with the
-  server pushing events as they happen.
+  server pushing events as they happen. The bridge also **describes** what it
+  exposes: a module built with a current module-builder answers `lidl()` with its
+  LIDL contract, and the bridge serves that contract plus OpenRPC, OpenAPI and
+  AsyncAPI documents built from it.
 
   This doc-test proves the whole thing end-to-end on the commit under test:
 
   1. Create a **provider** module inline. It has a method that succeeds, a
-     method that reports an application-level failure, and an event it emits on
-     demand.
-  2. Build the bridge from **this repo**, run both under a `logoscore` daemon,
-     and start the bridge over an explicit allowlist.
-  3. Call the provider over HTTP — with **by-name** params and with
-     **positional** params — and through the REST projection, asserting all
-     three agree.
-  4. Prove the security posture: a browser `Origin` is refused, a non-JSON
-     content type is refused, and a denied method is byte-identical to a module
-     that does not exist.
-  5. Open **two concurrent WebSocket clients**, subscribe both, trigger the
+     method that reports an application-level failure, a method the bridge
+     will not let anyone call, and an event it emits on demand.
+  2. Build the bridge and its offline document renderer from **this repo**,
+     run the bridge and the provider under a `logoscore` daemon, and start the
+     bridge over an explicit allowlist.
+  3. Wait for the bridge to read the provider's contract, and check what it
+     serves: the whole contract, what this bridge lets you call, and digests
+     that tie the served contract to the provider's build.
+  4. Call the provider over HTTP — as `<module>.<method>` aliases, with
+     **by-name** and **positional** params, and through the REST projection.
+  5. Prove the security posture: a denied method, a denied call and a module
+     that does not exist all get byte-identical refusals, a browser `Origin` is
+     refused, and a non-JSON content type is refused.
+  6. Fetch the three self-description documents, check that none of them
+     offers the denied method, and check that the offline renderer produces
+     the same documents from the provider's `.lidl` file.
+  7. Open **two concurrent WebSocket clients**, subscribe both, trigger the
      event, and assert each receives it under its own caller-assigned
      subscription id.
-  6. Send **twelve requests over one kept-alive HTTP connection**, then open a
+  8. Send **twelve requests over one kept-alive HTTP connection**, then open a
      WebSocket client and assert it is still admitted: a connection counts
      once against the per-peer bound, however many requests it carries.
 
   A green run means an external client drove a real module through the bridge,
-  two clients received the same event independently, none of the refusals
-  leaked which one it was, and a pooled HTTP client did not lock WebSocket
-  clients out.
+  the bridge described exactly what it lets clients do, two clients received
+  the same event independently, none of the refusals leaked which one it was,
+  and a pooled HTTP client did not lock WebSocket clients out.
 
-what_you_build: "A provider module plus the `json_rpc_bridge` (built from this repo) running together under a `logoscore` daemon; `curl` drives method calls over HTTP and two concurrent `websocat` clients receive a pushed event."
+what_you_build: "A provider module plus the `json_rpc_bridge` (built from this repo) running together under a `logoscore` daemon; `curl` drives method calls and fetches the self-description documents over HTTP, `json-rpc-bridge-docs` renders the same documents offline, and two concurrent `websocat` clients receive a pushed event."
 
 what_you_learn:
   - How to expose a module's methods and events to external clients
-  - The `rpc.call` shape, and why module and method are separate fields rather than a dotted name
+  - How to call a module as `<module>.<method>`, and why that is exactly `rpc.call`
   - That by-name and positional params are both accepted and mean the same thing
+  - How the bridge reads a module's contract through `lidl()`, and what `rpc.schema` shows
+  - Why policy restricts calls but not knowledge, and how `exposure` tells you what you may call
+  - How to fetch the OpenRPC, OpenAPI and AsyncAPI documents, and render them offline
   - How event subscriptions work over WebSocket, with client-assigned subscription ids
   - Why an application-level failure arrives as a JSON-RPC `result`, not an `error`
   - How the bridge refuses browser origins, and why a loopback bind is not enough on its own
@@ -60,6 +72,7 @@ prerequisites:
     Verify: `nix flake --help >/dev/null 2>&1 && echo "Flakes enabled"`
   - "**git** — nix flakes only see files tracked by git."
   - "**curl** and **websocat** — to drive HTTP and WebSocket."
+  - "**python3** — to read the JSON answers and compute digests."
   - "A Linux or macOS machine."
 
 sections:
@@ -69,12 +82,13 @@ sections:
       A module becomes reachable through the bridge by being named in the
       bridge's `expose.modules` list — there is nothing to implement and no
       interface to adopt. This provider is an ordinary `universal` (pure-C++)
-      module with three things worth exercising:
+      module with four things worth exercising:
 
       ```cpp
       std::string        greet(const std::string& who);   // plain success
       StdLogosResult     mustFail();                      // application failure
       int64_t            fire(int64_t value);             // emits an event
+      void               internalReset();                 // the bridge denies it
       logos_events:
           void tick(int64_t value);
       ```
@@ -83,6 +97,11 @@ sections:
       `{success:false}` has **answered the call**. The bridge must deliver that
       in the JSON-RPC `result`, not convert it to an `error` — otherwise a
       caller cannot tell a business rejection from a transport failure.
+
+      Building it with the current module-builder also gives it the derived
+      built-ins `name()`, `version()` and `lidl()`. `lidl()` answers with the
+      module's canonical LIDL contract: the same bytes as the module's `#lidl`
+      build output, which this doc-test builds too.
     steps:
       - title: "provider_module/metadata.json"
         text: "`interface: universal`, no dependencies, and one declared event."
@@ -131,6 +150,10 @@ sections:
                 // Emits tick(value) and returns the value back.
                 int64_t fire(int64_t value);
 
+                // Resets internal state. The bridge's config leaves it out, so
+                // it is part of the contract but not callable from outside.
+                void internalReset();
+
             logos_events:
                 void tick(int64_t value);
             };
@@ -156,6 +179,8 @@ sections:
                 tick(value);
                 return value;
             }
+
+            void ProviderModuleImpl::internalReset() {}
 
       - title: "provider_module/CMakeLists.txt"
         file:
@@ -195,11 +220,23 @@ sections:
                 };
             }
 
-      - title: "Build the provider"
+      - title: "Build the provider and its contract"
+        text: "`#lgx` is the installable package; `#lidl` is the canonical contract the build published."
         run: |
           cd provider_module && git init -q && git add -A
           nix build .#lgx -o ../provider-lgx
+          nix build .#lidl -o ../provider-lidl
           cd ..
+          cat provider-lidl/provider_module.lidl
+        code_block: |
+          cd provider_module && git init -q && git add -A
+          nix build .#lgx -o ../provider-lgx
+          nix build .#lidl -o ../provider-lidl
+          cat ../provider-lidl/provider_module.lidl
+        expect_contains:
+          - "module provider_module {"
+          - "method internalReset()"
+          - "event tick(value: int)"
         check_file: "provider-lgx"
 
   - title: "Build and install both modules"
@@ -207,7 +244,8 @@ sections:
     text: |
       Build `logoscore` and `lgpm`, seed the modules directory with the
       capability module that ships with `logoscore`, then install the provider
-      and the bridge.
+      and the bridge. `json-rpc-bridge-docs`, built from the same commit as the
+      bridge, renders the bridge's documents without a running node.
     steps:
       - title: "Build logoscore"
         run: "nix build 'github:logos-co/logos-logoscore-cli' --out-link ./logos"
@@ -220,6 +258,10 @@ sections:
       - title: "Build the bridge from this repo"
         run: "nix build 'github:logos-co/logos-json-rpc-bridge{release}#lgx' -o bridge-lgx"
         check_file: "bridge-lgx"
+
+      - title: "Build the offline document renderer from this repo"
+        run: "nix build 'github:logos-co/logos-json-rpc-bridge{release}#json-rpc-bridge-docs' -o docs-cli"
+        check_file: "docs-cli/bin/json-rpc-bridge-docs"
 
       - title: "Seed the modules directory"
         run: |
@@ -242,12 +284,15 @@ sections:
     text: |
       Start the daemon, load both modules, then `start` the bridge over an
       explicit allowlist. There is **no wildcard**: every module reachable from
-      outside is named here, and `provider_module`'s `mustFail` is left exposed
-      while a `denied` method name is not — which the refusal test below uses.
+      outside is named here. `provider_module`'s method list is an allow list
+      that names `greet`, `mustFail` and `fire` — so `internalReset` is denied.
+      It does not name `lidl`, `name` or `version` either, and it need not:
+      those introspection built-ins stay callable on every exposed module.
 
-      Note what `start` returns: the resolved exposure, the bound endpoints, and
-      `subscription_continuity`, which tells you whether the running protocol can
-      report a provider restart.
+      Note what `start` returns: the bound endpoints, the resolved exposure,
+      `subscription_continuity` (whether the running protocol can report a
+      provider restart), and `docs`, the snapshot of the self-description
+      documents.
     steps:
       - title: "Start the daemon"
         run: |
@@ -268,42 +313,160 @@ sections:
 
       - title: "Start the bridge"
         run: |
-          ./logos/bin/logoscore --config-dir . call json_rpc_bridge start '{"http":{"port":8645},"expose":{"modules":[{"name":"provider_module","methods":{"deny":["denied"]}}]}}'
+          printf '%s\n' '{"http":{"port":8645},"expose":{"modules":[{"name":"provider_module","methods":{"allow":["greet","mustFail","fire"]}}]}}' > bridge-config.json
+          ./logos/bin/logoscore --config-dir . call json_rpc_bridge start "$(cat bridge-config.json)"
           sleep 2
         code_block: |
           logoscore call json_rpc_bridge start '{
             "http": {"port": 8645},
             "expose": {"modules": [
-              {"name": "provider_module", "methods": {"deny": ["denied"]}}
+              {"name": "provider_module",
+               "methods": {"allow": ["greet", "mustFail", "fire"]}}
             ]}
           }'
         expect_contains:
           - "http://127.0.0.1:8645"
           - "ws://127.0.0.1:8645/ws"
+          - '"docs"'
 
       - title: "The node is healthy"
         run: "curl -s --max-time 15 http://127.0.0.1:8645/healthz"
         expect_contains:
           - '"status":"ok"'
 
+      - title: "Wait for the provider's contract"
+        text: |
+          Discovery runs in the background: the bridge reads the provider's
+          method list, sees `lidl`, calls it, reads the contract, and checks it
+          against the running module. Until then the module's
+          `interface_status` is `pending`.
+        run: |
+          status=""
+          polls=0
+          while [ "$polls" -lt 60 ]; do
+            polls=$((polls + 1))
+            status=$(curl -s --max-time 5 -H 'Content-Type: application/json' \
+              -d '{"jsonrpc":"2.0","id":1,"method":"rpc.schema","params":{"module":"provider_module"}}' \
+              http://127.0.0.1:8645/rpc |
+              python3 -c 'import json, sys; print(json.load(sys.stdin)["result"]["interface_status"])' 2>/dev/null)
+            [ "$status" = "ok" ] && break
+            sleep 0.5
+          done
+          if [ "$status" = "ok" ]; then
+            echo "INTERFACE_READY after $polls poll(s)"
+          else
+            echo "provider_module was not typed after $polls polls (interface_status: ${status:-no answer})"
+            exit 1
+          fi
+        code_block: |
+          curl -s -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"rpc.schema","params":{"module":"provider_module"}}' \
+            http://127.0.0.1:8645/rpc      # repeat until "interface_status":"ok"
+        expect_contains:
+          - "INTERFACE_READY"
+
       - title: "Discovery lists the provider's methods and events"
         run: "curl -s --max-time 15 http://127.0.0.1:8645/modules"
         expect_contains:
           - "provider_module"
+          - '"interface_status":"ok"'
           - "greet"
           - "tick"
+
+  - title: "Read the provider's contract"
+    step: true
+    text: |
+      `rpc.schema` is the bridge's view of one module. For a typed module it
+      carries the **complete** contract as `interface`, whatever the policy,
+      next to `exposure`: what this bridge lets you call and subscribe to.
+      **Policy restricts calls, not knowledge** — `internalReset` is in the
+      contract for anyone to read, and still nobody can call it here.
+    steps:
+      - title: "rpc.schema serves the whole contract and this bridge's exposure"
+        run: |
+          curl -s --max-time 15 -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"rpc.schema","params":{"module":"provider_module"}}' \
+            http://127.0.0.1:8645/rpc > schema.json
+          python3 - <<'EOF'
+          import json
+          view = json.load(open("schema.json"))["result"]
+          declared = [m["name"] for m in view["interface"]["methods"]]
+          exposed = view["exposure"]["methods"]
+          print("interface_status:", view["interface_status"], "source:", view["source"])
+          print("declared methods:", declared)
+          print("exposure:", view["exposure"])
+          print("cross_check:", view["cross_check"]["state"])
+          if view["interface_status"] == "ok" and view["source"] == "lidl":
+              print("TYPED")
+          if "internalReset" in declared and "internalReset" not in exposed:
+              print("INTERNAL_RESET_DECLARED_NOT_EXPOSED")
+          if all(b in exposed for b in ("name", "version", "lidl")):
+              print("BUILTINS_EXPOSED")
+          EOF
+        code_block: |
+          curl -s -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"rpc.schema","params":{"module":"provider_module"}}' \
+            http://127.0.0.1:8645/rpc
+        expect_contains:
+          - "TYPED"
+          - "INTERNAL_RESET_DECLARED_NOT_EXPOSED"
+          - "BUILTINS_EXPOSED"
+
+      - title: "lidl() is callable despite the allow list, and is the published contract"
+        text: |
+          Three digests must agree: of the text `provider_module.lidl` returns,
+          the `contract_sha256` the bridge reports, and of the `#lidl` file the
+          provider's build wrote.
+        run: |
+          curl -s --max-time 15 -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":2,"method":"provider_module.lidl"}' \
+            http://127.0.0.1:8645/rpc > lidl-answer.json
+          python3 - <<'EOF'
+          import hashlib, json
+          answer = json.load(open("lidl-answer.json"))["result"]
+          view = json.load(open("schema.json"))["result"]
+          built = open("provider-lidl/provider_module.lidl", "rb").read()
+          served = hashlib.sha256(answer.encode("utf-8")).hexdigest()
+          published = hashlib.sha256(built).hexdigest()
+          print("sha256(lidl()):   ", served)
+          print("contract_sha256:  ", view["contract_sha256"])
+          print("sha256(#lidl):    ", published)
+          if served == view["contract_sha256"] == published:
+              print("DIGEST_MATCHES")
+          EOF
+        code_block: |
+          curl -s -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":2,"method":"provider_module.lidl"}' \
+            http://127.0.0.1:8645/rpc
+        expect_contains:
+          - "DIGEST_MATCHES"
 
   - title: "Call methods over HTTP"
     step: true
     text: |
-      `rpc.call` takes **`module` and `method` as separate fields** — never a
-      dotted `module.method` name. That mirrors the transport spec's own
-      `Request`, keeps calls symmetric with subscriptions (which take `module`
-      and `event`), and means there is no split rule to get wrong.
+      A JSON-RPC method named `<module>.<method>` is an **alias**: exactly
+      `rpc.call` with `module` and `method` as separate fields, which is how
+      generated OpenRPC clients name operations. `rpc.call` itself keeps the two
+      fields apart, mirroring the transport spec's own `Request`; the alias
+      splits at the first `.`, which is unambiguous because module names cannot
+      contain one.
 
-      The inner `params` may be an object keyed by parameter name, or a
-      positional array. Both are shown below and must produce the same answer.
+      The params may be an object keyed by parameter name, or a positional
+      array. Both are shown below and must produce the same answer.
     steps:
+      - title: "Aliases call the provider and its built-ins"
+        run: |
+          curl -s --max-time 20 -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"provider_module.greet","params":{"who":"alias"}}' \
+            http://127.0.0.1:8645/rpc
+          echo
+          curl -s --max-time 20 -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":2,"method":"provider_module.version"}' \
+            http://127.0.0.1:8645/rpc
+        expect_contains:
+          - '"result":"hello, alias"'
+          - '"result":"1.0.0"'
+
       - title: "By-name params"
         run: |
           curl -s --max-time 20 -H 'Content-Type: application/json' \
@@ -337,49 +500,88 @@ sections:
           that cannot tell those apart cannot retry correctly.
         run: |
           curl -s --max-time 20 -H 'Content-Type: application/json' \
-            -d '{"jsonrpc":"2.0","id":3,"method":"rpc.call","params":{"module":"provider_module","method":"mustFail"}}' \
+            -d '{"jsonrpc":"2.0","id":3,"method":"provider_module.mustFail"}' \
+            http://127.0.0.1:8645/rpc > must-fail.json
+          cat must-fail.json
+          echo
+          python3 - <<'EOF'
+          import json
+          reply = json.load(open("must-fail.json"))
+          if "error" not in reply and reply["result"]["success"] is False:
+              print("APPLICATION_FAILURE_IS_A_RESULT")
+          EOF
+        code_block: |
+          curl -s -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":3,"method":"provider_module.mustFail"}' \
             http://127.0.0.1:8645/rpc
         expect_contains:
-          - '"result"'
           - "the widget was not frobnicated"
-        expect_not_contains:
-          - '"error"'
+          - "APPLICATION_FAILURE_IS_A_RESULT"
 
   - title: "The refusals"
     step: true
     text: |
       Three properties that are easy to get wrong and silent when you do.
     steps:
-      - title: "A denied method and a module that does not exist are byte-identical"
+      - title: "A denied method, a denied call and a missing module are byte-identical"
         text: |
-          `denied` is excluded by config; `no_such_module` was never loaded. If
-          these answered differently, the bridge would be an oracle for what a
-          node is running and what it has been told to hide.
+          `internalReset` is left out by the allow list; `no_such_module` was
+          never loaded. If these answered differently, the bridge would be an
+          oracle for what a node is running and what it has been told to hide.
+          The contract is public — the refusal is not a secret-keeper, it only
+          stops the call.
         run: |
-          echo "--- denied method ---"
-          curl -s --max-time 15 -H 'Content-Type: application/json' \
-            -d '{"jsonrpc":"2.0","id":4,"method":"rpc.call","params":{"module":"provider_module","method":"denied"}}' \
+          refuse() {
+            curl -s --max-time 15 -H 'Content-Type: application/json' -d "$1" http://127.0.0.1:8645/rpc
+          }
+          refuse '{"jsonrpc":"2.0","id":4,"method":"provider_module.internalReset"}' > refused-alias.json
+          refuse '{"jsonrpc":"2.0","id":4,"method":"rpc.call","params":{"module":"provider_module","method":"internalReset"}}' > refused-call.json
+          refuse '{"jsonrpc":"2.0","id":4,"method":"rpc.call","params":{"module":"no_such_module","method":"internalReset"}}' > refused-module.json
+          refuse '{"jsonrpc":"2.0","id":4,"method":"no_such_module.internalReset"}' > refused-module-alias.json
+          for f in refused-alias refused-call refused-module refused-module-alias; do
+            echo "--- $f"; cat "$f.json"; echo
+          done
+          if cmp -s refused-alias.json refused-call.json &&
+             cmp -s refused-call.json refused-module.json &&
+             cmp -s refused-module.json refused-module-alias.json &&
+             grep -q '"code":-32601' refused-alias.json; then
+            echo "REFUSALS_IDENTICAL"
+          fi
+        code_block: |
+          # denied, through the alias and through rpc.call
+          curl -s -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":4,"method":"provider_module.internalReset"}' \
             http://127.0.0.1:8645/rpc
-          echo
-          echo "--- module that does not exist ---"
-          curl -s --max-time 15 -H 'Content-Type: application/json' \
-            -d '{"jsonrpc":"2.0","id":4,"method":"rpc.call","params":{"module":"no_such_module","method":"denied"}}' \
+          curl -s -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":4,"method":"rpc.call",
+                 "params":{"module":"provider_module","method":"internalReset"}}' \
+            http://127.0.0.1:8645/rpc
+
+          # a module that does not exist
+          curl -s -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":4,"method":"rpc.call",
+                 "params":{"module":"no_such_module","method":"internalReset"}}' \
             http://127.0.0.1:8645/rpc
         expect_contains:
           - "METHOD_NOT_FOUND"
+          - "REFUSALS_IDENTICAL"
 
       - title: "A browser origin is refused"
         text: |
           A loopback bind is **not** a boundary against a browser: browsers do
           not apply same-origin policy to WebSockets and send no preflight, so
           without this check any page the operator visits could drive the node.
+          The document routes are gated the same way.
         run: |
-          curl -s -o /dev/null -w '%{http_code}\n' --max-time 15 \
+          curl -s -o /dev/null -w 'rpc: %{http_code}\n' --max-time 15 \
             -H 'Content-Type: application/json' -H 'Origin: http://evil.example' \
             -d '{"jsonrpc":"2.0","id":5,"method":"rpc.ping"}' \
             http://127.0.0.1:8645/rpc
+          curl -s -o /dev/null -w 'openapi: %{http_code}\n' --max-time 15 \
+            -H 'Origin: http://evil.example' http://127.0.0.1:8645/openapi.json
         expect_contains:
-          - "403"
+          - "rpc: 403"
+          - "openapi: 403"
 
       - title: "A non-JSON content type is refused"
         text: "Requiring `application/json` forces a CORS preflight that fails, since no CORS headers are ever sent."
@@ -388,6 +590,123 @@ sections:
             -H 'Content-Type: text/plain' --data 'x' http://127.0.0.1:8645/rpc
         expect_contains:
           - "415"
+
+  - title: "The self-description documents"
+    step: true
+    text: |
+      The bridge describes itself three ways: `rpc.discover` answers an OpenRPC
+      1.3.2 document, `GET /openapi.json` an OpenAPI 3.1.1 one for the HTTP
+      routes, and `GET /asyncapi.json` an AsyncAPI 3.0.0 one for the WebSocket.
+      Their operations cover exactly what this bridge lets you call and
+      subscribe to, so a client generated from them never contains a call the
+      bridge refuses. Types come from the provider's contract.
+    steps:
+      - title: "Fetch the three documents"
+        run: |
+          curl -s --max-time 15 -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"rpc.discover"}' \
+            http://127.0.0.1:8645/rpc > discover.json
+          curl -s --max-time 15 -o openapi.json -w 'openapi.json: HTTP %{http_code}, %{size_download} bytes\n' \
+            http://127.0.0.1:8645/openapi.json
+          curl -s --max-time 15 -o asyncapi.json -w 'asyncapi.json: HTTP %{http_code}, %{size_download} bytes\n' \
+            http://127.0.0.1:8645/asyncapi.json
+          python3 - <<'EOF'
+          import json
+          rpc = json.load(open("discover.json"))["result"]
+          api = json.load(open("openapi.json"))
+          aapi = json.load(open("asyncapi.json"))
+          print("openrpc", rpc["openrpc"], "| openapi", api["openapi"], "| asyncapi", aapi["asyncapi"])
+          greet = next(m for m in rpc["methods"] if m["name"] == "provider_module.greet")
+          print("provider_module.greet params:", greet["params"])
+          if ("/modules/provider_module/greet" in api["paths"]
+                  and "provider_module.greet.request" in aapi["components"]["messages"]
+                  and greet["params"][0]["schema"] == {"type": "string"}):
+              print("DOCUMENTS_PARSE")
+          EOF
+        code_block: |
+          curl -s -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"rpc.discover"}' http://127.0.0.1:8645/rpc
+          curl -s http://127.0.0.1:8645/openapi.json
+          curl -s http://127.0.0.1:8645/asyncapi.json
+        expect_contains:
+          - "openapi.json: HTTP 200"
+          - "asyncapi.json: HTTP 200"
+          - "openrpc 1.3.2 | openapi 3.1.1 | asyncapi 3.0.0"
+          - "DOCUMENTS_PARSE"
+
+      - title: "No document offers the denied method"
+        text: |
+          Every operation names its target with `x-logos-module` and
+          `x-logos-method` (or `x-logos-event`). `internalReset` must be the
+          target of none, while the built-in `lidl` must be offered.
+        run: |
+          python3 - <<'EOF'
+          import json
+
+          def targets(node, found):
+              if isinstance(node, dict):
+                  if "x-logos-module" in node:
+                      found.append((node["x-logos-module"],
+                                    node.get("x-logos-method") or node.get("x-logos-event")))
+                  for value in node.values():
+                      targets(value, found)
+              elif isinstance(node, list):
+                  for value in node:
+                      targets(value, found)
+
+          docs = {
+              "openrpc": json.load(open("discover.json"))["result"],
+              "openapi": json.load(open("openapi.json")),
+              "asyncapi": json.load(open("asyncapi.json")),
+          }
+          clean = True
+          for kind, doc in docs.items():
+              found = []
+              targets(doc, found)
+              denied = [t for t in found if t[1] == "internalReset"]
+              offers_lidl = ("provider_module", "lidl") in found
+              mentions = "internalReset" in json.dumps(doc)
+              print(kind, "- operations:", len(found), "denied:", len(denied),
+                    "offers lidl:", offers_lidl, "mentions internalReset:", mentions)
+              clean = clean and found and not denied and offers_lidl and not mentions
+          if clean:
+              print("NO_DENIED_OPERATIONS")
+          EOF
+        expect_contains:
+          - "NO_DENIED_OPERATIONS"
+
+      - title: "The offline renderer produces the same documents"
+        text: |
+          `json-rpc-bridge-docs` renders what a bridge started with this config
+          serves, from the provider's `.lidl` file alone. `--info-version` pins
+          the version the documents carry to the one the running bridge reports.
+        run: |
+          version=$(python3 -c 'import json; print(json.load(open("discover.json"))["result"]["info"]["version"])')
+          for kind in openrpc openapi asyncapi; do
+            ./docs-cli/bin/json-rpc-bridge-docs --config bridge-config.json --format "$kind" \
+              --lidl provider_module=provider-lidl/provider_module.lidl \
+              --info-version "$version" > "offline-$kind.json"
+          done
+          cmp openapi.json offline-openapi.json && cmp asyncapi.json offline-asyncapi.json &&
+            echo "OFFLINE_BYTES_MATCH"
+          python3 - <<'EOF'
+          import json
+          served = {
+              "openrpc": json.load(open("discover.json"))["result"],
+              "openapi": json.load(open("openapi.json")),
+              "asyncapi": json.load(open("asyncapi.json")),
+          }
+          same = [kind for kind in served if json.load(open("offline-%s.json" % kind)) == served[kind]]
+          print("identical:", same)
+          if len(same) == 3:
+              print("OFFLINE_MATCHES_SERVED")
+          EOF
+        code_block: |
+          json-rpc-bridge-docs --config bridge-config.json --format openapi \
+            --lidl provider_module=provider-lidl/provider_module.lidl --info-version 0.1.0
+        expect_contains:
+          - "OFFLINE_BYTES_MATCH"
+          - "OFFLINE_MATCHES_SERVED"
 
   - title: "Subscribe to events from two clients at once"
     step: true
@@ -398,7 +717,8 @@ sections:
       **The client assigns the subscription id**, per the transport spec, so it
       can correlate without waiting for the ack. Two clients subscribe to the
       same event with *different* ids; one upstream subscription is made and
-      fanned out, and each client sees the event under its own id.
+      fanned out, and each client sees the event under its own id. The event is
+      triggered with the `provider_module.fire` alias.
     steps:
       - title: "Two concurrent subscribers receive the same event"
         run: |
@@ -410,7 +730,7 @@ sections:
             | $WS -t ws://127.0.0.1:8645/ws > client-b.txt 2>&1 &
           sleep 3
           curl -s --max-time 15 -H 'Content-Type: application/json' \
-            -d '{"jsonrpc":"2.0","id":9,"method":"rpc.call","params":{"module":"provider_module","method":"fire","params":{"value":42}}}' \
+            -d '{"jsonrpc":"2.0","id":9,"method":"provider_module.fire","params":{"value":42}}' \
             http://127.0.0.1:8645/rpc
           echo
           wait
@@ -427,10 +747,10 @@ sections:
 
           # trigger it
           curl -s -H 'Content-Type: application/json' \
-            -d '{"jsonrpc":"2.0","id":9,"method":"rpc.call",
-                 "params":{"module":"provider_module","method":"fire","params":{"value":42}}}' \
+            -d '{"jsonrpc":"2.0","id":9,"method":"provider_module.fire","params":{"value":42}}' \
             http://127.0.0.1:8645/rpc
         expect_contains:
+          - '"result":42'
           - '"subscription":"alpha"'
           - '"subscription":"beta"'
           - "rpc.event"
@@ -492,21 +812,30 @@ sections:
           logoscore stop
 
 conclusion: |
-  An external HTTP client called a module's methods — by name and positionally —
-  and got the same answer through the REST projection. An application-level
-  failure came back as a `result`, keeping a business rejection distinguishable
-  from a transport failure. Two independent WebSocket clients subscribed to one
-  event with their own ids and both received it from a single upstream
-  subscription. And the three refusals — a denied method, a browser origin, a
-  non-JSON body — all answered without revealing which one they were.
+  An external HTTP client called a module's methods — as `<module>.<method>`
+  aliases, by name and positionally — and got the same answer through the REST
+  projection. An application-level failure came back as a `result`, keeping a
+  business rejection distinguishable from a transport failure.
 
-  A pooled HTTP client then sent twelve requests over a single connection, and
-  a WebSocket client was admitted straight afterwards. The per-peer bound counts
-  connections, not requests, and every loopback client is the same peer.
+  The bridge read the provider's contract through `lidl()` and served all of it,
+  while its `exposure` and its three documents offered only what the allow list
+  permits: `internalReset` was readable but not callable, and `lidl` stayed
+  callable though the allow list never named it. The text `lidl()` returned, the
+  `contract_sha256` the bridge reported and the provider's `#lidl` build output
+  had the same digest, and `json-rpc-bridge-docs` rendered the same documents
+  from that file alone.
+
+  Two independent WebSocket clients subscribed to one event with their own ids
+  and both received it from a single upstream subscription. The refusals — a
+  denied method by alias and by `rpc.call`, a module that does not exist, a
+  browser origin, a non-JSON body — all answered without revealing which one
+  they were. A pooled HTTP client then sent twelve requests over a single
+  connection, and a WebSocket client was admitted straight afterwards.
 
   One thing this doc-test does not yet assert: what a client sees when a
   provider **restarts** underneath a live subscription. The bridge terminates
-  the affected subscriptions and pushes `rpc.subscription_terminated`, rather
-  than silently resuming a stream with a hole in it — but that needs
-  logos-protocol ≥ 0.9, and `getInfo()`'s `subscription_continuity` flag reports
-  whether the running node has it.
+  the affected subscriptions and pushes `rpc.subscription_terminated`
+  (`provider_unavailable`, or `provider_changed` when a different build now
+  answers), rather than silently resuming a stream with a hole in it — but that
+  needs logos-protocol ≥ 0.9, and `getInfo()`'s `subscription_continuity` flag
+  reports whether the running node has it.
