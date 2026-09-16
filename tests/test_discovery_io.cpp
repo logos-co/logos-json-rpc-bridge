@@ -212,6 +212,59 @@ LOGOS_TEST(an_unavailable_call_marks_the_view_stale_once) {
     LOGOS_ASSERT_FALSE(d.view("m1")->stale);
 }
 
+// A replaced client voids what was asked of the old one, and rediscovers at once.
+LOGOS_TEST(a_replaced_client_rediscovers_at_once_and_drops_old_answers) {
+    const BridgeConfig cfg = config(R"({"expose":{"modules":["m1"]}})");
+    FakeIo fake;
+    Discovery d(&cfg, fake.io());
+    d.start();
+    fake.complete("m1", "getPluginInterface", ok(kIface));
+    d.onProviderLost("m1");
+    LOGOS_ASSERT_TRUE(fake.fire("m1"));   // a refresh on the old client, still out
+    d.onClientReplaced("m1");
+    LOGOS_ASSERT_EQ(fake.delays.back(), 0L);
+    fake.complete("m1", "getPluginInterface", ok(kIface));
+    LOGOS_ASSERT_TRUE(d.view("m1")->stale);
+    LOGOS_ASSERT_TRUE(fake.fire("m1"));
+    fake.complete("m1", "getPluginInterface", ok(kIface));
+    LOGOS_ASSERT_FALSE(d.view("m1")->stale);
+    LOGOS_ASSERT_TRUE(fake.timers.empty());
+}
+
+LOGOS_TEST(a_replaced_client_marks_a_settled_view_stale) {
+    const BridgeConfig cfg = config(R"({"expose":{"modules":["m1"]}})");
+    FakeIo fake;
+    Discovery d(&cfg, fake.io());
+    d.start();
+    fake.complete("m1", "getPluginInterface", ok(kIface));
+    const size_t swaps = fake.swapped.size();
+    d.onClientReplaced("m1");
+    LOGOS_ASSERT_TRUE(d.view("m1")->stale);
+    LOGOS_ASSERT_EQ(fake.swapped.size(), swaps + 1);
+    LOGOS_ASSERT_EQ(fake.delays.back(), 0L);
+    d.onClientReplaced("zz");   // not exposed
+    LOGOS_ASSERT_EQ(fake.timers.size(), static_cast<size_t>(1));
+}
+
+// The new client counts establishments from 1 again; its first arm is not a restart, its second is.
+LOGOS_TEST(a_replaced_client_restarts_the_generation_baseline) {
+    const BridgeConfig cfg = config(R"({"expose":{"modules":["m1"]}})");
+    FakeIo fake;
+    Discovery d(&cfg, fake.io());
+    d.start();
+    fake.complete("m1", "getPluginInterface", ok(kIface));
+    d.onProviderArmed("m1", 9);
+    d.onClientReplaced("m1");
+    LOGOS_ASSERT_TRUE(fake.fire("m1"));
+    fake.complete("m1", "getPluginInterface", ok(kIface));
+    LOGOS_ASSERT_TRUE(fake.timers.empty());
+    d.onProviderArmed("m1", 1);
+    LOGOS_ASSERT_TRUE(fake.timers.empty());
+    d.onProviderArmed("m1", 2);
+    LOGOS_ASSERT_EQ(fake.delays.back(), 0L);
+    LOGOS_ASSERT_TRUE(d.view("m1")->stale);
+}
+
 LOGOS_TEST(a_stopping_pump_drops_late_completions) {
     const BridgeConfig cfg = config(R"({"expose":{"modules":["m1"]}})");
     FakeIo fake;

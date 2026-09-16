@@ -292,6 +292,28 @@ cannot detect a provider restart and the stream resumes with a silent gap.
 `getInfo()` reports `subscription_continuity` so you can see which behaviour you
 have.
 
+### Replacing a connection that stays unavailable
+
+The bridge replaces its connection to a module when calls through it keep
+answering `object_unavailable`.
+
+- **Why.** Qt Remote Objects cannot recover a connection whose peer died in the
+  middle of a message: it keeps the length of that message and reads the next
+  module process's handshake as its remainder. A module unloaded while it was
+  streaming (a chunked download, say) is then unreachable after its reload, from
+  that connection only. A new connection reaches it.
+- **When.** At the first such answer that comes at least 2 s after the
+  connection was made, then no sooner than 4, 8, … up to 60 s after the
+  previous replacement while the module stays unavailable. Any answer from the
+  module resets the spacing. A module that is simply not loaded is replaced on
+  the same schedule, at no other cost.
+- **What moves.** Calls already sent on the old connection are still answered.
+  Its upstream subscriptions move to the new connection with their subscribers,
+  who were already told of the loss that came first; the module is rediscovered
+  at once.
+- Each replacement logs a line, and `getInfo()` counts them in
+  `upstream_clients_replaced`.
+
 ### Errors
 
 Standard JSON-RPC codes, with the Logos taxonomy carried losslessly in
@@ -441,8 +463,9 @@ report. The comparison covers the whole answer, type spellings included.
 - **Unchanged:** nothing happens.
 
 Rediscovery also starts when the protocol reports a provider lost (subscriptions
-end with `provider_unavailable`) and when a bridged call finds the module
-unavailable. A reload can therefore move a module between typed and untyped.
+end with `provider_unavailable`), when a bridged call finds the module
+unavailable, and when the bridge replaces its connection to the module. A reload
+can therefore move a module between typed and untyped.
 
 **Limitation: a fast reload of the same build is invisible.** A reload onto an
 identical live report, finished inside the protocol's 1 s liveness poll, changes
@@ -547,6 +570,7 @@ json-rpc-bridge-docs --config PATH --format openrpc|openapi|asyncapi|schema|inte
 | `http`, `ws`, `auth` | the endpoints and auth mode (while running) |
 | `modules` | the configured policy per module |
 | `connections`, `subscriptions`, `upstream_subscriptions` | live counts |
+| `upstream_clients_replaced` | connections to modules replaced since `start()` (see *Replacing a connection that stays unavailable*) |
 | `protocol_version`, `subscription_continuity` | the logos-protocol in use, and whether it can report a provider loss |
 | `lidl_reader` | `"lidl <version> (<rev>)"`, the logos-lidl that reads contracts |
 | `discovery` | `{revalidate_ms}` |

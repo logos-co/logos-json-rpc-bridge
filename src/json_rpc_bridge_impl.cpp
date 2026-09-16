@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -70,10 +71,10 @@ class BridgeCore {
 public:
     BridgeCore(BridgeConfig cfg, std::string origin)
         : m_cfg(std::move(cfg)),
-          m_clients(std::move(origin)),
+          m_clients(std::make_shared<ClientRegistry>(std::move(origin))),
           m_discovery(&m_cfg, discoveryIo()),
           m_docs(docPublisherIo()),
-          m_hub(&m_clients,
+          m_hub(m_clients.get(),
                 [this](const Delivery& d) { onEvent(d); },
                 [this](std::uint64_t id, const std::string& m, const std::string& e,
                        const char* why) { onSubscriptionLost(id, m, e, why); }) {
@@ -82,6 +83,16 @@ public:
                 if (s == logos::SubStatus::Armed) m_discovery.onProviderArmed(m, generation);
                 else m_discovery.onProviderLost(m);
             });
+        m_clients->setPost([this](CallPump::Job job) { return m_pump.submit(std::move(job)); });
+        // On the pump. The old client's reports stop counting before discovery resets its baseline.
+        m_clients->setOnReplaced([this](const std::string& m, std::uint64_t epoch) {
+            std::fprintf(stderr, "json_rpc_bridge: replaced the client for %s (epoch %llu): "
+                                 "calls kept finding it unavailable\n",
+                         m.c_str(), static_cast<unsigned long long>(epoch));
+            m_hub.retire(m, epoch);
+            m_discovery.onClientReplaced(m);
+            m_hub.rebind(m);
+        });
     }
 
     bool start(std::string* error);
@@ -106,7 +117,7 @@ private:
     DocPublisher::Io docPublisherIo();
 
     BridgeConfig m_cfg;
-    ClientRegistry m_clients;
+    std::shared_ptr<ClientRegistry> m_clients;   // shared: call completions hold it weakly
     Discovery m_discovery;
     DocPublisher m_docs;   // before the threads that run its jobs, so it outlives them
     CallPump m_pump;
@@ -200,9 +211,7 @@ DiscoveryIo BridgeCore::discoveryIo() {
     DiscoveryIo io;
     io.invoke = [this](const std::string& module, const std::string& method, int timeoutMs,
                        DiscoveryIo::Done done) {
-        auto client = m_clients.get(module);
-        if (!client) { done(CallOutcome{nlohmann::json(), "object_unavailable"}); return; }
-        client->invokeAsyncResult(method, nlohmann::json::array(),
+        m_clients->invoke(module, method, nlohmann::json::array(),
             [done](nlohmann::json value, const logos::CallError& e) {
                 if (e.ok()) done(CallOutcome{std::move(value), std::string()});
                 else done(CallOutcome{nlohmann::json(), e.code});
@@ -278,7 +287,7 @@ void BridgeCore::shutdown() {
     m_draining.store(true);
     m_scheduler.stop();   // no further timed rediscoveries
     m_hub.clear();        // no further event deliveries
-    m_clients.close();    // no further completions
+    m_clients->close();   // no further completions, from replaced clients too
     m_pump.stop();        // no further submissions
     if (m_server) { m_server->stop(); m_server.reset(); }  // joins, then destroys the ctx
     std::lock_guard<std::mutex> lock(m_subMu);
@@ -589,11 +598,11 @@ void BridgeCore::dispatchCall(const nlohmann::json& id, const CallTarget& t,
         args = std::move(positional);
     }
     const int timeout = m_cfg.limits.callTimeoutMs;
-    auto client = m_clients.get(t.module);
-    if (!client) { batch->fill(slot, makeError(id, notFound())); return; }
+    if (!m_clients->get(t.module)) { batch->fill(slot, makeError(id, notFound())); return; }
     Discovery* discovery = &m_discovery;
-    const bool queued = m_pump.submit([client, t, args, id, batch, slot, timeout, discovery] {
-        client->invokeAsyncResult(t.method, args,
+    std::shared_ptr<ClientRegistry> clients = m_clients;
+    const bool queued = m_pump.submit([clients, t, args, id, batch, slot, timeout, discovery] {
+        clients->invoke(t.module, t.method, args,
             [batch, slot, id, discovery, module = t.module](nlohmann::json value,
                                                             const logos::CallError& e) {
                 if (!e.ok()) {
@@ -632,6 +641,7 @@ nlohmann::json BridgeCore::info() const {
         {"connections", m_server ? m_server->connectionCount() : 0},
         {"subscriptions", subs},
         {"upstream_subscriptions", m_hub.upstreamCount()},
+        {"upstream_clients_replaced", m_clients->replacements()},
         {"protocol_version", LOGOS_PROTOCOL_VERSION_STRING},
         {"subscription_continuity", kHasSubscriptionContinuity},
         {"lidl_reader", lidlReaderVersion()},

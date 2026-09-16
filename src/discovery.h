@@ -142,6 +142,27 @@ public:
         scheduleRefresh(module, std::chrono::milliseconds(0));
     }
 
+    // The module's client was replaced: answers still out on the old one are void, and
+    // the new client counts subscription generations from zero again.
+    void onClientReplaced(const std::string& module) {
+        bool swapped = false;
+        {
+            std::lock_guard<std::mutex> lock(m_mu);
+            Slot* s = slot(module);
+            if (!s) return;
+            ++s->attempt;
+            s->inFlight = false;
+            s->retryArmed = true;
+            s->armedGeneration = 0;
+            if (s->view->resolved() && !s->view->stale) {
+                s->view = std::make_shared<const ModuleView>(staleView(*s->view));
+                swapped = true;
+            }
+        }
+        if (swapped) changed(module);
+        scheduleRefresh(module, std::chrono::milliseconds(0));
+    }
+
     // A bridged call found the module unavailable. The loss watcher only runs
     // for modules with subscriptions, so this is how the rest go stale.
     void onCallUnavailable(const std::string& module) {

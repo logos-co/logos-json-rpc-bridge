@@ -4,7 +4,7 @@
 // and the subscription hub. The ONLY file in the module that makes upstream
 // calls, and the only one whose threading rules are load-bearing.
 //
-// Three invariants hold this together. Break any one and the failure is a
+// Four invariants hold this together. Break any one and the failure is a
 // deadlock or a use-after-free, not a wrong answer:
 //
 //  1. No lock is ever held across an upstream call. LpClient::ensure()
@@ -18,14 +18,21 @@
 //  3. The event callback does nothing but build a frame and hand it to a sink.
 //     It runs on the publishing side's thread; blocking there stalls the
 //     producer, and the payload buffer is borrowed for that call only.
+//  4. A client is never destroyed inside one of its own callbacks: a replaced
+//     client is released on the pump.
+//
+// The client types are template parameters only so the unit tests can drive
+// this without IPC; the module uses logos::LpClient.
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
-#include <set>
 #include <string>
 #include <thread>
 #include <utility>
@@ -37,50 +44,244 @@
 
 #include <logos_lp_client.h>
 
+#include "recycle_policy.h"
 #include "rpc_dispatcher.h"   // termination reasons
 
 namespace bridge {
 
 // ---------------------------------------------------------------------------
-// ClientRegistry — one LpClient per target module.
+// ClientRegistry — one client per target module, replaced when it wedges.
 // ---------------------------------------------------------------------------
 //
 // Construction is cheap (LpClient stores two strings); the expensive
 // lp_client_create happens lazily inside the client's own CAS-protected
-// ensure(), on whichever thread calls first. So the mutex here covers the map
-// and nothing else, which is what keeps invariant 1.
-class ClientRegistry {
+// ensure(), on whichever thread calls first. So the mutex here covers the
+// bookkeeping and nothing else, which is what keeps invariant 1.
+//
+// Each module's client has an epoch, 1 for the first. Calls go through
+// invoke(), which counts them per client: a replaced client stays alive until
+// its calls are answered, because destroying it would drop their callbacks.
+template <class Client>
+class BasicClientRegistry : public std::enable_shared_from_this<BasicClientRegistry<Client>> {
 public:
-    explicit ClientRegistry(std::string origin) : m_origin(std::move(origin)) {}
+    using Clock = RecyclePolicy::Clock;
+    using Job = std::function<void()>;
+    using Done = std::function<void(nlohmann::json, const logos::CallError&)>;
+    using OnReplaced = std::function<void(const std::string& module, std::uint64_t epoch)>;
 
-    std::shared_ptr<logos::LpClient> get(const std::string& target) {
+    // A replaced client whose calls never all come back is released anyway after this.
+    static constexpr std::chrono::minutes kRetiredDeadline{5};
+
+    struct Lease {
+        std::shared_ptr<Client> client;   // null once closed
+        std::uint64_t epoch = 0;
+        explicit operator bool() const { return client != nullptr; }
+    };
+
+    explicit BasicClientRegistry(std::string origin,
+                                 std::function<Clock::time_point()> now = &Clock::now)
+        : m_origin(std::move(origin)), m_now(std::move(now)) {}
+
+    // Where replacements and releases run (the pump), and who hears of a replacement there.
+    // Both are set once, before the first call.
+    void setPost(std::function<bool(Job)> post) { m_post = std::move(post); }
+    void setOnReplaced(OnReplaced hook) { m_onReplaced = std::move(hook); }
+
+    Lease get(const std::string& module) {
         std::lock_guard<std::mutex> lock(m_mu);
-        if (m_closed) return nullptr;
-        auto it = m_clients.find(target);
-        if (it != m_clients.end()) return it->second;
-        auto c = std::make_shared<logos::LpClient>(target, m_origin);
-        m_clients.emplace(target, c);
-        return c;
+        if (m_closed) return {};
+        const std::shared_ptr<Slot>& slot = currentLocked(module);
+        return Lease{slot->client, slot->epoch};
     }
 
-    // Refuse new clients and drop our references. Held clients stay alive until
-    // their last shared_ptr goes, so an in-flight call never loses its client.
+    // 0 until the module's first client exists.
+    std::uint64_t epoch(const std::string& module) const {
+        std::lock_guard<std::mutex> lock(m_mu);
+        auto it = m_modules.find(module);
+        return it == m_modules.end() || !it->second.current ? 0 : it->second.current->epoch;
+    }
+
+    // An async call through the module's current client; `done` runs exactly once.
+    // Call from the pump.
+    void invoke(const std::string& module, const std::string& method, const nlohmann::json& args,
+                Done done, int timeoutMs) {
+        std::shared_ptr<Slot> slot;
+        std::shared_ptr<Client> client;
+        std::vector<std::shared_ptr<Client>> expired;
+        {
+            std::lock_guard<std::mutex> lock(m_mu);
+            if (!m_closed) {
+                slot = currentLocked(module);
+                client = slot->client;
+                ++slot->inFlight;
+                sweepLocked(&expired);
+            }
+        }
+        expired.clear();
+        if (!client) {
+            done(nlohmann::json(), logos::callErrorObjectUnavailable(module, "the bridge is stopping"));
+            return;
+        }
+        std::weak_ptr<BasicClientRegistry> self = this->weak_from_this();
+        client->invokeAsyncResult(method, args,
+            [self, slot, done = std::move(done)](nlohmann::json value, const logos::CallError& e) {
+                if (auto registry = self.lock()) registry->finished(slot, e);
+                done(std::move(value), e);
+            },
+            timeoutMs);
+    }
+
+    // Replace `module`'s client if `epoch` is still the current one. Call from the pump.
+    bool replace(const std::string& module, std::uint64_t epoch) {
+        std::shared_ptr<Client> dying;
+        std::vector<std::shared_ptr<Client>> expired;
+        std::uint64_t next = 0;
+        {
+            std::lock_guard<std::mutex> lock(m_mu);
+            auto it = m_modules.find(module);
+            if (m_closed || it == m_modules.end() || !it->second.current ||
+                it->second.current->epoch != epoch)
+                return false;
+            Module& m = it->second;
+            std::shared_ptr<Slot> old = std::move(m.current);
+            m.current = makeSlotLocked(module, m);
+            next = m.current->epoch;
+            ++m_replacements;
+            old->retired = true;
+            old->retiredAt = m_now();
+            if (old->inFlight == 0) dying = std::move(old->client);
+            else m_retired.push_back(std::move(old));
+            sweepLocked(&expired);
+        }
+        dying.reset();
+        expired.clear();
+        if (m_onReplaced) m_onReplaced(module, next);
+        return true;
+    }
+
+    std::uint64_t replacements() const {
+        std::lock_guard<std::mutex> lock(m_mu);
+        return m_replacements;
+    }
+
+    // Replaced clients still waiting for their calls.
+    std::size_t retiredCount() const {
+        std::lock_guard<std::mutex> lock(m_mu);
+        return m_retired.size();
+    }
+
+    // Refuse new clients and destroy every client, replaced ones included, so
+    // no callback can follow. A job still holding a lease releases its client when it ends.
     void close() {
-        std::map<std::string, std::shared_ptr<logos::LpClient>> dead;
+        std::vector<std::shared_ptr<Client>> dead;
         {
             std::lock_guard<std::mutex> lock(m_mu);
             m_closed = true;
-            dead.swap(m_clients);
+            for (auto& kv : m_modules)
+                if (kv.second.current && kv.second.current->client)
+                    dead.push_back(std::move(kv.second.current->client));
+            for (auto& slot : m_retired)
+                if (slot->client) dead.push_back(std::move(slot->client));
+            m_retired.clear();
+            for (auto& client : m_unreleased) dead.push_back(std::move(client));
+            m_unreleased.clear();
         }
         dead.clear();   // destructors run with no lock held
     }
 
 private:
+    struct Slot {
+        std::string module;
+        std::shared_ptr<Client> client;
+        std::uint64_t epoch = 0;
+        int inFlight = 0;
+        bool retired = false;
+        Clock::time_point retiredAt{};
+    };
+    struct Module {
+        explicit Module(Clock::time_point created) : policy(created) {}
+        std::shared_ptr<Slot> current;
+        std::uint64_t lastEpoch = 0;
+        RecyclePolicy policy;
+    };
+
+    const std::shared_ptr<Slot>& currentLocked(const std::string& module) {
+        auto it = m_modules.find(module);
+        if (it == m_modules.end()) it = m_modules.emplace(module, Module(m_now())).first;
+        Module& m = it->second;
+        if (!m.current) m.current = makeSlotLocked(module, m);
+        return m.current;
+    }
+
+    std::shared_ptr<Slot> makeSlotLocked(const std::string& module, Module& m) {
+        auto slot = std::make_shared<Slot>();
+        slot->module = module;
+        slot->client = std::make_shared<Client>(module, m_origin);
+        slot->epoch = ++m.lastEpoch;
+        return slot;
+    }
+
+    void sweepLocked(std::vector<std::shared_ptr<Client>>* out) {
+        const Clock::time_point now = m_now();
+        for (auto it = m_retired.begin(); it != m_retired.end();) {
+            if (now - (*it)->retiredAt < kRetiredDeadline) { ++it; continue; }
+            if ((*it)->client) out->push_back(std::move((*it)->client));
+            it = m_retired.erase(it);
+        }
+    }
+
+    bool post(Job job) { return m_post && m_post(std::move(job)); }
+
+    // A call's answer, on the client's owner thread (invariant 4).
+    void finished(const std::shared_ptr<Slot>& slot, const logos::CallError& e) {
+        std::shared_ptr<Client> dying;
+        std::uint64_t replaceEpoch = 0;
+        {
+            std::lock_guard<std::mutex> lock(m_mu);
+            --slot->inFlight;
+            auto it = m_modules.find(slot->module);
+            if (!m_closed && it != m_modules.end() && it->second.current == slot) {
+                if (e.code == "object_unavailable") {
+                    if (it->second.policy.onUnavailable(m_now())) replaceEpoch = slot->epoch;
+                } else if (e.ok() || e.code == "unauthorized") {
+                    it->second.policy.onReached();
+                }
+            }
+            if (slot->retired && slot->inFlight == 0 && slot->client) {
+                dying = std::move(slot->client);
+                m_retired.erase(std::remove(m_retired.begin(), m_retired.end(), slot), m_retired.end());
+            }
+        }
+        if (dying) {
+            // Held through a box, so a refused post leaves the client with us rather than in the dead job.
+            auto box = std::make_shared<std::shared_ptr<Client>>(std::move(dying));
+            if (!post([box] { box->reset(); })) {
+                std::lock_guard<std::mutex> lock(m_mu);
+                m_unreleased.push_back(std::move(*box));
+            }
+        }
+        if (replaceEpoch != 0) {
+            std::weak_ptr<BasicClientRegistry> self = this->weak_from_this();
+            const std::string module = slot->module;
+            post([self, module, replaceEpoch] {
+                if (auto registry = self.lock()) registry->replace(module, replaceEpoch);
+            });
+        }
+    }
+
     std::string m_origin;
-    std::mutex m_mu;
-    std::map<std::string, std::shared_ptr<logos::LpClient>> m_clients;
+    std::function<Clock::time_point()> m_now;
+    std::function<bool(Job)> m_post;
+    OnReplaced m_onReplaced;
+    mutable std::mutex m_mu;
+    std::map<std::string, Module> m_modules;
+    std::vector<std::shared_ptr<Slot>> m_retired;
+    std::vector<std::shared_ptr<Client>> m_unreleased;   // released by close() or the destructor
+    std::uint64_t m_replacements = 0;
     bool m_closed = false;
 };
+
+using ClientRegistry = BasicClientRegistry<logos::LpClient>;
 
 // ---------------------------------------------------------------------------
 // CallPump — a small pool that owns every upstream submission.
@@ -166,8 +367,10 @@ struct Delivery {
     std::uint64_t generation = 0;
 };
 
-class SubscriptionHub {
+template <class Client>
+class BasicSubscriptionHub {
 public:
+    using Registry = BasicClientRegistry<Client>;
     // sink: called for each subscriber on each event. Runs on the upstream
     // delivery thread, so it must only enqueue.
     // onLost: called once per affected subscriber when a module's subscriptions
@@ -181,10 +384,10 @@ public:
                                               logos::SubStatus state,
                                               std::uint64_t generation)>;
 
-    SubscriptionHub(ClientRegistry* clients, Sink sink, OnLost onLost)
+    BasicSubscriptionHub(Registry* clients, Sink sink, OnLost onLost)
         : m_clients(clients), m_sink(std::move(sink)), m_onLost(std::move(onLost)) {}
 
-    ~SubscriptionHub() { clear(); }
+    ~BasicSubscriptionHub() { clear(); }
 
     // Also told every status of a watched module (discovery rediscovers on it).
     // Set once, before the first subscribe; it runs on the delivery thread.
@@ -218,57 +421,11 @@ public:
         }
 
         if (!needsSubscribe) return true;
-
-        auto client = m_clients->get(module);
-        if (!client) {
-            std::lock_guard<std::mutex> lock(m_subMu);
-            m_up.erase(key);
-            return false;
-        }
-
-        // Captured by value: the callback may outlive any particular
-        // subscriber, and must never reach back into the hub's map.
-        std::weak_ptr<Up> weak = up;
-        auto sink = m_sink;
-        auto onEvent = [weak, sink](nlohmann::json payload) {
-            auto up = weak.lock();
-            if (!up) return;
-            // Lock-free read of the published snapshot — invariant 2's other
-            // half: delivery never takes m_subMu, so it can never be the thread
-            // an unsubscribe is waiting behind.
-            auto subs = std::atomic_load(&up->subscribers);
-            if (!subs || subs->ids.empty()) return;
-            const std::uint64_t gen = up->generation.load(std::memory_order_acquire);
-            for (std::uint64_t id : subs->ids)
-                sink(Delivery{id, up->module, up->event, payload, gen});
-        };
-
-        // The loss watcher is per MODULE, so it is installed once per client
-        // rather than once per subscription — the runtime reports a provider
-        // dying at that granularity, and every event of that module is
-        // affected together. Installing it per (module, event) would deliver N
-        // copies of one loss and terminate the same client subscriptions N
-        // times.
-        //
-        // Below protocol 0.9 there is no loss signal at all and a provider
-        // restart resumes the stream silently. Documented in the README as the
-        // reason for the minimum version.
-        ensureLossWatcher(module, *client);
-
-        auto handle = client->subscribe(event, std::move(onEvent));
-
-        if (!handle.valid()) {
-            std::lock_guard<std::mutex> lock(m_subMu);
-            m_up.erase(key);
-            return false;
-        }
-        {
-            std::lock_guard<std::mutex> lock(m_subMu);
-            auto it = m_up.find(key);
-            if (it == m_up.end()) return false;   // torn down while we subscribed
-            it->second->handle = std::move(handle);
-        }
-        return true;
+        if (bind(up)) return true;
+        std::lock_guard<std::mutex> lock(m_subMu);
+        auto it = m_up.find(key);
+        if (it != m_up.end() && it->second == up && up->epoch == 0) m_up.erase(it);
+        return false;
     }
 
     // Drop one subscriber. The upstream subscription is deliberately KEPT even
@@ -290,29 +447,24 @@ public:
         for (auto& kv : m_up) removeSubscriberLocked(kv.second, subscriberId);
     }
 
-    // Install this module's loss watcher exactly once.
-    //
-    // Capturing `this` is safe because clear() destroys every handle and the
-    // hub outlives the registry it was built from; ~SubscriptionHub calls
-    // clear() for exactly this reason.
-    void ensureLossWatcher(const std::string& module, logos::LpClient& client) {
+    // `module`'s client was replaced by `epoch`: its predecessor's status reports no longer count.
+    void retire(const std::string& module, std::uint64_t epoch) {
+        std::lock_guard<std::mutex> lock(m_subMu);
+        Watch& w = m_watch[module];
+        w.accept = std::max(w.accept, epoch);
+    }
+
+    // Move `module`'s upstream subscriptions onto its current client, keeping their subscribers.
+    // Call from the pump, after retire().
+    void rebind(const std::string& module) {
+        std::vector<std::shared_ptr<Up>> ups;
         {
             std::lock_guard<std::mutex> lock(m_subMu);
-            if (!m_watched.insert(module).second) return;
+            if (m_closed) return;
+            for (const auto& kv : m_up)
+                if (kv.second->module == module) ups.push_back(kv.second);
         }
-        // The ONE status callback this client can hold: a second installer
-        // would replace it, so every other listener goes through m_statusHook.
-        client.onSubscriptionStatus(
-            [this, module](logos::SubStatus state, std::uint64_t generation) {
-                // Held is impossible here — the bridge never sets a manual
-                // policy — but treating it as a loss anyway is the safe
-                // reading: it means the same thing to a downstream client, and
-                // a silent fall-through would resume a stream with a hole.
-                if (state == logos::SubStatus::Lost || state == logos::SubStatus::Held ||
-                    state == logos::SubStatus::Abandoned)
-                    notifyModuleLost(module, reason::kProviderUnavailable);
-                if (m_statusHook) m_statusHook(module, state, generation);
-            });
+        for (const auto& up : ups) bind(up);
     }
 
     // The provider for `module` went away or was replaced, which ends every
@@ -366,6 +518,13 @@ public:
     }
 
 private:
+    using Lease = typename Registry::Lease;
+    using Handle = decltype(std::declval<Client&>().subscribe(
+        std::declval<const std::string&>(), std::declval<std::function<void(nlohmann::json)>>()));
+
+    // A replacement racing a subscribe makes bind() go round again; replacements are seconds apart.
+    static constexpr int kBindRounds = 4;
+
     struct Key {
         std::string module, event;
         bool operator<(const Key& o) const {
@@ -375,10 +534,119 @@ private:
     struct Subscribers { std::vector<std::uint64_t> ids; };
     struct Up {
         std::string module, event;
-        logos::LpSubscription handle;
+        Handle handle;
+        std::uint64_t epoch = 0;   // the client `handle` came from; 0 until bound
         std::shared_ptr<const Subscribers> subscribers;
         std::atomic<std::uint64_t> generation{1};
     };
+    // Per module: the client epoch whose watcher is installed, and the one whose reports count.
+    struct Watch {
+        std::uint64_t installed = 0;
+        std::uint64_t accept = 0;
+    };
+
+    bool liveLocked(const std::shared_ptr<Up>& up) const {
+        auto it = m_up.find(Key{up->module, up->event});
+        return it != m_up.end() && it->second == up;
+    }
+
+    // Subscribe `up` on its module's current client. True once it is bound to one.
+    bool bind(const std::shared_ptr<Up>& up) {
+        for (int round = 0; round < kBindRounds; ++round) {
+            const Lease lease = m_clients->get(up->module);
+            if (!lease) return false;
+            {
+                std::lock_guard<std::mutex> lock(m_subMu);
+                if (m_closed || !liveLocked(up)) return false;
+                if (up->epoch >= lease.epoch) return true;
+            }
+            ensureLossWatcher(up->module, lease);
+            Handle handle = lease.client->subscribe(up->event, deliveryFor(up));
+            if (!handle.valid()) {
+                std::lock_guard<std::mutex> lock(m_subMu);
+                return up->epoch != 0;
+            }
+            Handle old;   // outlives the lock below (invariant 2)
+            {
+                std::lock_guard<std::mutex> lock(m_subMu);
+                if (m_closed || !liveLocked(up)) {
+                    old = std::move(handle);
+                    return false;
+                }
+                if (up->epoch >= lease.epoch) {
+                    old = std::move(handle);
+                } else {
+                    old = std::move(up->handle);
+                    up->handle = std::move(handle);
+                    up->epoch = lease.epoch;
+                }
+            }
+            if (m_clients->epoch(up->module) == lease.epoch) return true;
+        }
+        return true;
+    }
+
+    // Captured by value: the callback may outlive any particular subscriber,
+    // and must never reach back into the hub's map.
+    std::function<void(nlohmann::json)> deliveryFor(const std::shared_ptr<Up>& up) {
+        std::weak_ptr<Up> weak = up;
+        auto sink = m_sink;
+        return [weak, sink](nlohmann::json payload) {
+            auto up = weak.lock();
+            if (!up) return;
+            // Lock-free read of the published snapshot — invariant 2's other
+            // half: delivery never takes m_subMu, so it can never be the thread
+            // an unsubscribe is waiting behind.
+            auto subs = std::atomic_load(&up->subscribers);
+            if (!subs || subs->ids.empty()) return;
+            const std::uint64_t gen = up->generation.load(std::memory_order_acquire);
+            for (std::uint64_t id : subs->ids)
+                sink(Delivery{id, up->module, up->event, payload, gen});
+        };
+    }
+
+    // Install this client's loss watcher, once per client.
+    //
+    // The loss watcher is per MODULE, so it is installed once per client
+    // rather than once per subscription — the runtime reports a provider
+    // dying at that granularity, and every event of that module is affected
+    // together. Installing it per (module, event) would deliver N copies of
+    // one loss and terminate the same client subscriptions N times.
+    //
+    // Below protocol 0.9 there is no loss signal at all and a provider restart
+    // resumes the stream silently. Documented in the README as the reason for
+    // the minimum version.
+    //
+    // Capturing `this` is safe because the registry is closed, which destroys
+    // every client and so every watcher, before the hub goes.
+    void ensureLossWatcher(const std::string& module, const Lease& lease) {
+        {
+            std::lock_guard<std::mutex> lock(m_subMu);
+            Watch& w = m_watch[module];
+            if (w.installed >= lease.epoch) return;
+            w.installed = lease.epoch;
+            w.accept = std::max(w.accept, lease.epoch);
+        }
+        const std::uint64_t epoch = lease.epoch;
+        // The ONE status callback this client can hold: a second installer
+        // would replace it, so every other listener goes through m_statusHook.
+        lease.client->onSubscriptionStatus(
+            [this, module, epoch](logos::SubStatus state, std::uint64_t generation) {
+                {
+                    std::lock_guard<std::mutex> lock(m_subMu);
+                    auto it = m_watch.find(module);
+                    if (m_closed || it == m_watch.end() || it->second.accept != epoch) return;
+                }
+                // Held is impossible here — the bridge never sets a manual
+                // policy — but treating it as a loss anyway is the safe
+                // reading: it means the same thing to a downstream client, and
+                // a silent fall-through would resume a stream with a hole.
+                if (state == logos::SubStatus::Lost || state == logos::SubStatus::Held ||
+                    state == logos::SubStatus::Abandoned)
+                    notifyModuleLost(module, reason::kProviderUnavailable);
+                if (m_statusHook) m_statusHook(module, state, generation);
+            });
+    }
 
     void addSubscriberLocked(const std::shared_ptr<Up>& up, std::uint64_t id) {
         auto next = std::make_shared<Subscribers>(*std::atomic_load(&up->subscribers));
@@ -399,9 +667,8 @@ private:
                           std::shared_ptr<const Subscribers>(std::move(next)));
     }
 
-    ClientRegistry* m_clients;
-    // Modules whose loss watcher is already installed. Guarded by m_subMu.
-    std::set<std::string> m_watched;
+    Registry* m_clients;
+    std::map<std::string, Watch> m_watch;   // guarded by m_subMu
     Sink m_sink;
     OnLost m_onLost;
     OnModuleStatus m_statusHook;   // written once before any watcher exists
@@ -409,5 +676,7 @@ private:
     std::map<Key, std::shared_ptr<Up>> m_up;
     bool m_closed = false;
 };
+
+using SubscriptionHub = BasicSubscriptionHub<logos::LpClient>;
 
 } // namespace bridge
