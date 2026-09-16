@@ -504,6 +504,41 @@ inline ModuleView withExposure(const ExposedModule& em, ModuleView view) {
 }
 
 // ---------------------------------------------------------------------------
+// Offline: discovery's reading of a contract from a file or a package
+// ---------------------------------------------------------------------------
+
+// A contract read without a running module: resolved and consistent by assumption.
+struct OfflineView {
+    bool ok = false;
+    std::string error;                  // discovery's interface_error text
+    std::vector<std::string> warnings;  // reader codes and lint, for the caller to report
+    ModuleView view;                    // ok, exposure applied, cross_check null
+};
+
+// Steps 4-8: parse, validate, name, identity, digests, exposure. Callers check
+// the byte limit and UTF-8 first, as discovery does.
+inline OfflineView offlineView(const ExposedModule& em, const std::string& text) {
+    OfflineView r;
+    const ContractResult c = readContract(text, em.name);
+    if (!c.ok) {
+        r.error = contractErrorText(c, lidlReaderRev());
+        return r;
+    }
+    std::shared_ptr<const TypedContract> typed = typedContract(c);
+    if (!typed) {
+        r.error = "the contract could not be served";
+        return r;
+    }
+    ModuleView v = okView(pendingView(em.name), LiveReport{}, std::move(typed));
+    v.contractSha256 = sha256Hex(text);
+    r.view = withExposure(em, std::move(v));
+    r.warnings = c.warnings;
+    for (const auto& l : c.lint) r.warnings.push_back("lint: " + l);
+    r.ok = true;
+    return r;
+}
+
+// ---------------------------------------------------------------------------
 // Revalidation: a periodic re-read of each settled module's live report
 // ---------------------------------------------------------------------------
 

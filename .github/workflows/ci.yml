@@ -31,14 +31,20 @@ jobs:
           name: logos-co
           skipPush: true
 
-      # Three builds, each a distinct failure mode: the plugin itself, the
-      # packaged artifact (which catches a broken manifest or a missing icon
-      # that the plugin build never touches), and the unit suite.
+      # Each build is a distinct failure mode: the plugin itself, the packaged
+      # artifact (which catches a broken manifest or a missing icon that the
+      # plugin build never touches), the docs CLI, and the unit suite.
       - name: Build the plugin
         run: nix build .# -L
 
       - name: Build the .lgx package
         run: nix build .#lgx -L
+
+      # The offline renderer; it links liblgx, which the plugin never does.
+      - name: Build the docs CLI
+        run: |
+          nix build .#json-rpc-bridge-docs -L
+          ./result/bin/json-rpc-bridge-docs --version
 
       - name: Unit tests
         run: nix flake check -L
