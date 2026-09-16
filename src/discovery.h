@@ -11,6 +11,7 @@
 #include <mutex>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -39,6 +40,8 @@ struct DiscoveryIo {
     std::function<bool(const std::string& key, std::chrono::milliseconds delay, Job job)> schedule;
     // A different build now answers for `module`: end its client subscriptions.
     std::function<void(const std::string& module)> providerChanged;
+    // `module`'s view was replaced. Runs with no discovery lock held.
+    std::function<void(const std::string& module)> viewChanged;
 };
 
 class Discovery {
@@ -116,6 +119,7 @@ public:
             s->retryArmed = true;
             delay = retryDelay(s->failures);
         }
+        changed(module);
         scheduleRefresh(module, delay);
     }
 
@@ -134,6 +138,7 @@ public:
             s->retryArmed = true;
             s->view = std::make_shared<const ModuleView>(staleView(*s->view));
         }
+        changed(module);
         scheduleRefresh(module, std::chrono::milliseconds(0));
     }
 
@@ -150,6 +155,7 @@ public:
             s->retryArmed = true;
             delay = retryDelay(s->failures);
         }
+        changed(module);
         scheduleRefresh(module, delay);
     }
 
@@ -159,6 +165,17 @@ public:
         auto it = m_slots.find(module);
         if (it == m_slots.end()) return std::make_shared<const ModuleView>(pendingView(module));
         return it->second.view;
+    }
+
+    // Every exposed module's current view, in config order.
+    std::vector<std::shared_ptr<const ModuleView>> views() const {
+        std::vector<std::shared_ptr<const ModuleView>> out;
+        std::lock_guard<std::mutex> lock(m_mu);
+        for (const auto& em : m_config->modules) {
+            auto it = m_slots.find(em.name);
+            if (it != m_slots.end()) out.push_back(it->second.view);
+        }
+        return out;
     }
 
     bool methodPermitted(const std::string& module, const std::string& method) const {
@@ -298,6 +315,7 @@ private:
             s->retryArmed = retry;
             delay = retryDelay(s->failures);
         }
+        changed(module);
         if (retry) scheduleRefresh(module, delay);
     }
 
@@ -327,9 +345,14 @@ private:
             s->inFlight = true;
             s->view = std::make_shared<const ModuleView>(staleView(*s->view));
         }
+        changed(module);
         onInterface(module, next, std::move(r));
         // Its subscribers must re-subscribe; the protocol may never report this swap.
         if (m_io.providerChanged) m_io.providerChanged(module);
+    }
+
+    void changed(const std::string& module) {
+        if (m_io.viewChanged) m_io.viewChanged(module);
     }
 
     void scheduleRevalidation() {

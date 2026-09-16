@@ -3,9 +3,11 @@
 
 #include <logos_test.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
+#include "doc_openrpc.h"
 #include "rpc_dispatcher.h"
 
 using namespace bridge;
@@ -295,4 +297,38 @@ LOGOS_TEST(an_alias_notification_is_an_invalid_request) {
 LOGOS_TEST(an_alias_with_a_null_id_is_a_request) {
     CallTarget t; MappedError e;
     LOGOS_ASSERT_TRUE(alias(R"({"jsonrpc":"2.0","id":null,"method":"m.get"})", &t, &e));
+}
+
+// ── rpc.discover and the operation list ─────────────────────────────────────
+
+// rpc.* is checked before any alias split, so this never targets a module "rpc".
+LOGOS_TEST(rpc_discover_is_a_bridge_operation_never_an_alias) {
+    LOGOS_ASSERT_EQ(std::string(op::kDiscover), std::string("rpc.discover"));
+    RpcRequest r; MappedError e;
+    LOGOS_ASSERT_TRUE(parseRequest(j(R"({"jsonrpc":"2.0","id":1,"method":"rpc.discover"})"), &r, &e));
+    LOGOS_ASSERT_TRUE(isBridgeOp(r.method));
+    const auto& ops = bridgeOperations();
+    LOGOS_ASSERT_TRUE(std::find(ops.begin(), ops.end(), r.method) != ops.end());
+}
+
+LOGOS_TEST(the_answered_operations_are_rpc_names_listed_once) {
+    const auto& ops = bridgeOperations();
+    LOGOS_ASSERT_EQ(ops.size(), static_cast<size_t>(8));
+    for (size_t i = 0; i < ops.size(); ++i) {
+        LOGOS_ASSERT_TRUE(isBridgeOp(ops[i]));
+        LOGOS_ASSERT_TRUE(std::find(ops.begin() + i + 1, ops.end(), ops[i]) == ops.end());
+    }
+    // Not implemented, so not answered: bearer auth never reaches the dispatcher.
+    LOGOS_ASSERT_TRUE(std::find(ops.begin(), ops.end(), op::kAuth) == ops.end());
+}
+
+// rpc.discover describes exactly the operations the dispatcher answers, in its order.
+LOGOS_TEST(the_documents_list_exactly_the_answered_operations) {
+    std::vector<std::string> described;
+    for (const auto& op : bridge::docs::bridgeOps()) described.push_back(op.name);
+    LOGOS_ASSERT_TRUE(described == bridgeOperations());
+    std::vector<std::string> listed;
+    for (const auto& m : bridge::docs::openrpc::bridgeMethods())
+        listed.push_back(m["name"].get<std::string>());
+    LOGOS_ASSERT_TRUE(listed == bridgeOperations());
 }

@@ -23,11 +23,22 @@ constexpr const char* kSchema      = "rpc.schema";
 constexpr const char* kListModules = "rpc.list_modules";
 constexpr const char* kCancel      = "rpc.cancel";
 constexpr const char* kPing        = "rpc.ping";
+constexpr const char* kDiscover    = "rpc.discover";   // the OpenRPC document
 constexpr const char* kAuth        = "rpc.authenticate";
 // Server-initiated notifications.
 constexpr const char* kEvent       = "rpc.event";
 constexpr const char* kTerminated  = "rpc.subscription_terminated";
 } // namespace op
+
+// The operations handleOne answers, in the order rpc.discover lists them. Any
+// other rpc.* name is -32601.
+inline const std::vector<std::string>& bridgeOperations() {
+    static const std::vector<std::string> ops = {
+        op::kCall, op::kSubscribe, op::kUnsubscribe, op::kSchema,
+        op::kListModules, op::kPing, op::kCancel, op::kDiscover,
+    };
+    return ops;
+}
 
 struct RpcRequest {
     nlohmann::json id;

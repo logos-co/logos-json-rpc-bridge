@@ -28,6 +28,7 @@
 #include <libwebsockets.h>
 
 #include "bridge_config.h"
+#include "http_body.h"
 #include "peer_slots.h"
 #include "subscription_table.h"
 
@@ -59,6 +60,7 @@ struct Conn {
     std::string httpBody;                // accumulating POST body
     std::string httpRoute;               // path, captured at header time
     int httpStatus = 200;                // status for the queued HTTP response
+    std::unique_ptr<HttpBodyWriter> httpOut;   // the response being written; service thread only
     std::string peer;
 };
 

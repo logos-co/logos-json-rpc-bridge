@@ -8,6 +8,8 @@ namespace {
 
 constexpr const char* kWsProtocol = "jsonrpc-bridge.v1";
 constexpr const char* kJson = "application/json";
+// lws's own default: how long a response may go without the reader taking a slice.
+constexpr int kHttpWriteTimeoutSecs = 15;
 
 std::string hdr(struct lws* wsi, enum lws_token_indexes tok) {
     const int n = lws_hdr_total_length(wsi, tok);
@@ -291,27 +293,42 @@ int WsServer::dispatch(struct lws* wsi, enum lws_callback_reasons reason,
         return 0;   // the response arrives later, via send()
     }
 
+    // One slice per call. A GET's content timeout runs from the request, and one
+    // write of a large body would let it fire under a slow reader mid-body.
     case LWS_CALLBACK_HTTP_WRITEABLE: {
         auto c = lookup(wsi);
         if (!c) return 0;
-        std::string body;
-        int status = 200;
-        {
-            std::lock_guard<std::mutex> lock(c->mu);
-            if (c->outbound.empty()) return 0;
-            body = std::move(c->outbound.front());
-            c->outbound.pop_front();
-            status = c->httpStatus;
+        if (!c->httpOut) {
+            std::string body;
+            int status = 200;
+            {
+                std::lock_guard<std::mutex> lock(c->mu);
+                if (c->outbound.empty()) return 0;
+                body = std::move(c->outbound.front());
+                c->outbound.pop_front();
+                status = c->httpStatus;
+            }
+            unsigned char buf[LWS_PRE + 512], *p = buf + LWS_PRE, *end = buf + sizeof(buf);
+            if (lws_add_http_common_headers(wsi, static_cast<unsigned>(status), kJson,
+                                            body.size(), &p, end))
+                return 1;
+            if (lws_finalize_write_http_header(wsi, buf + LWS_PRE, &p, end)) return 1;
+            c->httpOut = std::make_unique<HttpBodyWriter>(std::move(body));
         }
-        unsigned char buf[LWS_PRE + 512], *p = buf + LWS_PRE, *end = buf + sizeof(buf);
-        if (lws_add_http_common_headers(wsi, static_cast<unsigned>(status), kJson,
-                                        body.size(), &p, end))
+        bool last = false;
+        const auto slice = c->httpOut->next(&last);
+        std::vector<unsigned char> out(LWS_PRE + slice.second);
+        std::memcpy(out.data() + LWS_PRE, slice.first, slice.second);
+        if (lws_write(wsi, out.data() + LWS_PRE, slice.second,
+                      last ? LWS_WRITE_HTTP_FINAL : LWS_WRITE_HTTP) < 0)
             return 1;
-        if (lws_finalize_write_http_header(wsi, buf + LWS_PRE, &p, end)) return 1;
-        std::vector<unsigned char> out(LWS_PRE + body.size());
-        std::memcpy(out.data() + LWS_PRE, body.data(), body.size());
-        if (lws_write(wsi, out.data() + LWS_PRE, body.size(), LWS_WRITE_HTTP_FINAL) < 0)
-            return 1;
+        // lws sends the slice before calling back again, so this is progress.
+        lws_set_timeout(wsi, PENDING_TIMEOUT_HTTP_CONTENT, kHttpWriteTimeoutSecs);
+        if (!last) {
+            lws_callback_on_writable(wsi);
+            return 0;
+        }
+        c->httpOut.reset();
         return lws_http_transaction_completed(wsi) ? -1 : 0;
     }
 

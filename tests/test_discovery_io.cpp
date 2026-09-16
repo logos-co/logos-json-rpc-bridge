@@ -22,6 +22,7 @@ struct FakeIo {
     std::map<std::string, DiscoveryIo::Job> timers;   // key -> job
     std::vector<long> delays;                         // every schedule() delay, in order
     std::vector<std::string> changed;                 // providerChanged() calls, in order
+    std::vector<std::string> swapped;                 // viewChanged() calls, in order
     bool postAccepts = true;
 
     DiscoveryIo io() {
@@ -42,6 +43,7 @@ struct FakeIo {
             return true;
         };
         io.providerChanged = [this](const std::string& module) { changed.push_back(module); };
+        io.viewChanged = [this](const std::string& module) { swapped.push_back(module); };
         return io;
     }
 
@@ -724,4 +726,40 @@ LOGOS_TEST(a_changed_live_report_ends_that_modules_subscriptions_only) {
     fake.complete("m1", "getPluginInterface", ok(kIface));
     fake.complete("m2", "getPluginInterface", ok(kIface));
     LOGOS_ASSERT_EQ(fake.changed.size(), static_cast<size_t>(1));
+}
+
+// ── the document publisher's feed ───────────────────────────────────────────
+
+LOGOS_TEST(views_come_back_in_config_order) {
+    const BridgeConfig cfg = config(R"({"expose":{"modules":["zeta","alpha"]}})");
+    FakeIo fake;
+    Discovery d(&cfg, fake.io());
+    const auto views = d.views();
+    LOGOS_ASSERT_EQ(views.size(), static_cast<size_t>(2));
+    LOGOS_ASSERT_EQ(views[0]->module, std::string("zeta"));
+    LOGOS_ASSERT_EQ(views[1]->module, std::string("alpha"));
+    LOGOS_ASSERT_TRUE(views[0] == d.view("zeta"));
+}
+
+// Every replaced view is announced once, after the fact; dropped completions are not.
+LOGOS_TEST(every_view_swap_is_announced) {
+    const BridgeConfig cfg = config(R"({"expose":{"modules":["m1","m2"]}})");
+    FakeIo fake;
+    Discovery d(&cfg, fake.io());
+    d.start();
+    LOGOS_ASSERT_TRUE(fake.swapped.empty());
+    fake.complete("m1", "getPluginInterface", ok(kIface));   // -> untyped
+    LOGOS_ASSERT_TRUE(fake.swapped == std::vector<std::string>{"m1"});
+    d.onCallUnavailable("m2");                                // in flight: nothing changes
+    LOGOS_ASSERT_EQ(fake.swapped.size(), static_cast<size_t>(1));
+    d.onProviderLost("m2");                                   // pending stays pending, but swapped
+    fake.complete("m2", "getPluginInterface", ok(kIface));   // superseded by the loss: dropped
+    LOGOS_ASSERT_TRUE(fake.swapped == (std::vector<std::string>{"m1", "m2"}));
+    LOGOS_ASSERT_TRUE(fake.fire("m2"));
+    fake.complete("m2", "getPluginInterface", ok(kIface));
+    LOGOS_ASSERT_TRUE(fake.swapped == (std::vector<std::string>{"m1", "m2", "m2"}));
+    d.onProviderLost("m1");                                   // stale
+    d.onProviderArmed("m1", 2);                               // stale again, refresh due
+    LOGOS_ASSERT_EQ(fake.swapped.size(), static_cast<size_t>(5));
+    LOGOS_ASSERT_TRUE(d.view("m1")->stale);
 }

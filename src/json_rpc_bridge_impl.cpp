@@ -11,6 +11,7 @@
 
 #include "bridge_config.h"
 #include "discovery.h"
+#include "doc_publisher.h"
 #include "error_map.h"
 #include "lidl_contract.h"
 #include "retry_scheduler.h"
@@ -51,6 +52,12 @@ constexpr bool kHasSubscriptionContinuity = true;
 constexpr bool kHasSubscriptionContinuity = false;
 #endif
 
+// metadata.json's version, which version() answers too; CMake reads it.
+#ifndef JSON_RPC_BRIDGE_VERSION
+#error "JSON_RPC_BRIDGE_VERSION is not defined; CMakeLists.txt reads it from metadata.json"
+#endif
+constexpr const char* kBridgeVersion = JSON_RPC_BRIDGE_VERSION;
+
 } // namespace
 
 using namespace bridge;
@@ -65,6 +72,7 @@ public:
         : m_cfg(std::move(cfg)),
           m_clients(std::move(origin)),
           m_discovery(&m_cfg, discoveryIo()),
+          m_docs(docPublisherIo()),
           m_hub(&m_clients,
                 [this](const Delivery& d) { onEvent(d); },
                 [this](std::uint64_t id, const std::string& m, const std::string& e,
@@ -95,10 +103,12 @@ private:
                           std::uint64_t sid);
     std::string onGet(const std::string& path, int* status);
     DiscoveryIo discoveryIo();
+    DocPublisher::Io docPublisherIo();
 
     BridgeConfig m_cfg;
     ClientRegistry m_clients;
     Discovery m_discovery;
+    DocPublisher m_docs;   // before the threads that run its jobs, so it outlives them
     CallPump m_pump;
     RetryScheduler m_scheduler;
     SubscriptionHub m_hub;
@@ -206,10 +216,28 @@ DiscoveryIo BridgeCore::discoveryIo() {
     io.providerChanged = [this](const std::string& module) {
         m_hub.notifyModuleLost(module, reason::kProviderChanged);
     };
+    io.viewChanged = [this](const std::string&) { m_docs.request(); };
+    return io;
+}
+
+// Builds read the views on the pump; the socket thread only swaps in results.
+DocPublisher::Io BridgeCore::docPublisherIo() {
+    DocPublisher::Io io;
+    io.inputs = [this] { return docContext(m_cfg, kBridgeVersion, m_discovery.views()); };
+    io.schedule = [this](const std::string& key, std::chrono::milliseconds delay,
+                         DocPublisher::Job job) {
+        return m_scheduler.schedule(key, delay, std::move(job));
+    };
+    io.post = [this](DocPublisher::Job job) { return m_pump.submit(std::move(job)); };
     return io;
 }
 
 bool BridgeCore::start(std::string* error) {
+    // Every view is pending yet; requests only ever read a finished snapshot.
+    if (!m_docs.buildNow()) {
+        *error = "could not build the self-description documents";
+        return false;
+    }
     m_pump.start(2);
     m_scheduler.start();
 
@@ -328,6 +356,8 @@ std::string BridgeCore::onGet(const std::string& path, int* status) {
         }.dump();
     }
     if (path == "/modules") return m_discovery.listModules().dump();
+    if (path == "/openapi.json") return m_docs.current()->openapi;
+    if (path == "/asyncapi.json") return m_docs.current()->asyncapi;
     const std::string prefix = "/modules/";
     if (path.rfind(prefix, 0) == 0) {
         const std::string name = path.substr(prefix.size());
@@ -430,6 +460,17 @@ void BridgeCore::handleOne(const std::shared_ptr<Conn>& conn, const nlohmann::js
         }
         nlohmann::json d = m_discovery.describe(req.params["module"].get<std::string>());
         batch->fill(slot, d.is_null() ? makeError(id, notFound()) : makeResult(id, d));
+        return;
+    }
+
+    if (req.method == op::kDiscover) {
+        // The copy and its serialisation are large: the pump does them.
+        const auto docs = m_docs.current();
+        const bool queued = m_pump.submit([docs, id, batch, slot] {
+            batch->fill(slot, makeResult(id, docs->openrpc));
+        });
+        if (!queued)
+            batch->fill(slot, makeError(id, {kShuttingDown, LogosErrorCode::NotReady, "shutting down"}));
         return;
     }
 
@@ -583,6 +624,7 @@ nlohmann::json BridgeCore::info() const {
     { std::lock_guard<std::mutex> lock(m_subMu); subs = m_subscribers.size(); }
     return nlohmann::json{
         {"running", m_server != nullptr},
+        {"version", kBridgeVersion},
         {"http", "http://" + m_cfg.host + ":" + std::to_string(m_cfg.port)},
         {"ws", "ws://" + m_cfg.host + ":" + std::to_string(m_cfg.port) + "/ws"},
         {"auth", m_cfg.authMode == AuthMode::Bearer ? "bearer" : "none"},
@@ -594,6 +636,7 @@ nlohmann::json BridgeCore::info() const {
         {"subscription_continuity", kHasSubscriptionContinuity},
         {"lidl_reader", lidlReaderVersion()},
         {"discovery", {{"revalidate_ms", m_cfg.discovery.revalidateMs}}},
+        {"docs", m_docs.info()},
     };
 }
 
@@ -632,6 +675,7 @@ std::string JsonRpcBridgeImpl::getInfo() {
     if (!m_core) {
         return nlohmann::json{
             {"running", false},
+            {"version", kBridgeVersion},
             {"protocol_version", LOGOS_PROTOCOL_VERSION_STRING},
             {"subscription_continuity", kHasSubscriptionContinuity},
             {"lidl_reader", lidlReaderVersion()},

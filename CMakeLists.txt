@@ -40,8 +40,13 @@ elseif(UNIX)
         "LINKER:--exclude-libs,liblogos_lidl.a:liblogos_lidl_c.a")
 endif()
 
+# getInfo().version and the documents' info.version: the version version() answers.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/metadata.json" BRIDGE_METADATA)
+string(JSON BRIDGE_VERSION GET "${BRIDGE_METADATA}" version)
+
 # getInfo().lidl_reader. The flake exports both; an ad-hoc build reports "unknown".
 target_compile_definitions(json_rpc_bridge_module_plugin PRIVATE
+    JSON_RPC_BRIDGE_VERSION="${BRIDGE_VERSION}"
     LOGOS_LIDL_REV="$ENV{LOGOS_LIDL_REV}"
     LOGOS_LIDL_VERSION="$ENV{LOGOS_LIDL_VERSION}")
 

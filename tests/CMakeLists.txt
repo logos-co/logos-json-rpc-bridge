@@ -21,9 +21,11 @@ logos_test(
         test_digest.cpp
         test_discovery_io.cpp
         test_discovery_model.cpp
+        test_doc_publisher.cpp
         test_docs.cpp
         test_error_map.cpp
         test_exposure.cpp
+        test_http_body.cpp
         test_lidl_contract.cpp
         test_peer_slots.cpp
         test_retry_scheduler.cpp
