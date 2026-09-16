@@ -29,10 +29,14 @@ intro: |
   5. Open **two concurrent WebSocket clients**, subscribe both, trigger the
      event, and assert each receives it under its own caller-assigned
      subscription id.
+  6. Send **twelve requests over one kept-alive HTTP connection**, then open a
+     WebSocket client and assert it is still admitted: a connection counts
+     once against the per-peer bound, however many requests it carries.
 
   A green run means an external client drove a real module through the bridge,
-  two clients received the same event independently, and none of the refusals
-  leaked which one it was.
+  two clients received the same event independently, none of the refusals
+  leaked which one it was, and a pooled HTTP client did not lock WebSocket
+  clients out.
 
 what_you_build: "A provider module plus the `json_rpc_bridge` (built from this repo) running together under a `logoscore` daemon; `curl` drives method calls over HTTP and two concurrent `websocat` clients receive a pushed event."
 
@@ -431,6 +435,51 @@ sections:
           - '"subscription":"beta"'
           - "rpc.event"
 
+  - title: "A pooled HTTP client does not lock out WebSocket clients"
+    step: true
+    text: |
+      The bridge bounds connections **per peer** (8 by default), and every
+      loopback client is the same peer. An HTTP client that keeps its
+      connection alive (curl with several URLs, `requests.Session`, any
+      connection pool) holds **one** of those slots, however many requests it
+      sends over that connection.
+
+      If every request took a slot of its own, twelve requests over one
+      connection would use up the bound, and the next WebSocket client would be
+      refused until the bridge restarted.
+    steps:
+      - title: "Twelve requests over one connection, then a WebSocket client"
+        text: |
+          curl sends all twelve requests over the same connection. For each
+          request it reports `num_connects`: `1` for the request that opened the
+          connection, and `0` for each request that reused it.
+        run: |
+          curl -s --max-time 30 -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"rpc.ping"}' \
+            -w '\nconnects=%{num_connects}\n' \
+            "http://127.0.0.1:8645/rpc?n=[1-12]" > keepalive.txt
+          echo "answered: $(grep -c '"result":"pong"' keepalive.txt)"
+          echo "connections opened: $(grep -c '^connects=1$' keepalive.txt)"
+          nix build --impure --expr 'let f = builtins.getFlake "github:NixOS/nixpkgs/nixos-unstable"; in f.legacyPackages.${builtins.currentSystem}.websocat' -o ws 2>/dev/null || true
+          WS=./ws/bin/websocat
+          ( printf '%s\n' '{"jsonrpc":"2.0","id":"after-keepalive","method":"rpc.ping"}'; sleep 3 ) \
+            | $WS -t ws://127.0.0.1:8645/ws > after-keepalive.txt 2>&1
+          cat after-keepalive.txt
+        code_block: |
+          # twelve pings; curl reuses one connection for all of them
+          curl -s -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"rpc.ping"}' \
+            -w '\nconnects=%{num_connects}\n' \
+            "http://127.0.0.1:8645/rpc?n=[1-12]"
+
+          # a WebSocket client is still admitted
+          websocat -t ws://127.0.0.1:8645/ws <<< '{"jsonrpc":"2.0","id":"after-keepalive","method":"rpc.ping"}'
+        expect_contains:
+          - "answered: 12"
+          - "connections opened: 1"
+          - '"id":"after-keepalive"'
+          - '"result":"pong"'
+
   - title: "Stop"
     step: true
     steps:
@@ -450,6 +499,10 @@ conclusion: |
   event with their own ids and both received it from a single upstream
   subscription. And the three refusals — a denied method, a browser origin, a
   non-JSON body — all answered without revealing which one they were.
+
+  A pooled HTTP client then sent twelve requests over a single connection, and
+  a WebSocket client was admitted straight afterwards. The per-peer bound counts
+  connections, not requests, and every loopback client is the same peer.
 
   One thing this doc-test does not yet assert: what a client sees when a
   provider **restarts** underneath a live subscription. The bridge terminates

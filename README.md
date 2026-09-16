@@ -266,9 +266,11 @@ effect.
   persistence directory — never from config, which gets logged and pasted into
   issues. Compared in constant time against a stored digest.
 - Bounded connections (total and per peer), in-flight calls, subscriptions,
-  body and frame sizes. A slow WebSocket reader is **closed**, not silently
-  starved of events: one upstream subscription feeds many clients, so the
-  producer cannot be back-pressured and dropping events would be a silent gap.
+  body and frame sizes. A connection counts once against the per-peer bound,
+  however many HTTP requests it carries, and every loopback client is the same
+  peer. A slow WebSocket reader is **closed**, not silently starved of events:
+  one upstream subscription feeds many clients, so the producer cannot be
+  back-pressured and dropping events would be a silent gap.
 
 ## Discovery
 
