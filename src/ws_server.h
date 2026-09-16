@@ -29,6 +29,7 @@
 
 #include "bridge_config.h"
 #include "peer_slots.h"
+#include "subscription_table.h"
 
 namespace bridge {
 
@@ -51,9 +52,9 @@ struct Conn {
     std::atomic<CloseReason> wantClose{CloseReason::None};
     std::atomic<int> inFlight{0};
 
-    // Subscriptions this connection holds: client-assigned id -> (module,event).
+    // Subscriptions this connection holds: client-assigned id -> (module, event, owner).
     std::mutex subMu;
-    std::map<std::string, std::pair<std::string, std::string>> subs;
+    SubscriptionTable subs;
 
     std::string httpBody;                // accumulating POST body
     std::string httpRoute;               // path, captured at header time

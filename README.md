@@ -166,7 +166,9 @@ notification.
 
 **Subscription ids are assigned by the client**, per the transport spec, so a
 client can correlate without waiting for the ack. Re-subscribing the same id is
-idempotent and never double-delivers.
+idempotent and never double-delivers. A subscribe that fails, or a subscription
+that is terminated, frees its id, so retrying with the same id subscribes
+afresh.
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"rpc.subscribe",

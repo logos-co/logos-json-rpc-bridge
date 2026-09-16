@@ -82,6 +82,8 @@ private:
     void onEvent(const Delivery& d);
     void onSubscriptionLost(std::uint64_t subscriberId, const std::string& module,
                             const std::string& event);
+    void abandonSubscribe(const std::shared_ptr<Conn>& conn, const std::string& key,
+                          std::uint64_t sid);
     std::string onGet(const std::string& path, int* status);
 
     BridgeConfig m_cfg;
@@ -259,6 +261,12 @@ void BridgeCore::onSubscriptionLost(std::uint64_t subscriberId, const std::strin
         m_subscribers.erase(it);
     }
     if (!conn) return;
+    // Free this exact id before announcing, so a re-subscribe prompted by the
+    // notification is Fresh rather than a stale "active".
+    {
+        std::lock_guard<std::mutex> lock(conn->subMu);
+        conn->subs.release(clientId.dump(), subscriberId);
+    }
     // Terminate rather than silently resume: a re-established upstream
     // subscription is a NEW one, and the events in between are unrecoverable.
     // The client decides whether to re-subscribe and refetch state.
@@ -268,15 +276,17 @@ void BridgeCore::onSubscriptionLost(std::uint64_t subscriberId, const std::strin
         {"event", event},
         {"reason", "provider_unavailable"},
     }).dump());
-    if (conn) {
-        std::lock_guard<std::mutex> lock(conn->subMu);
-        for (auto it = conn->subs.begin(); it != conn->subs.end(); ++it) {
-            if (it->second.first == module && it->second.second == event) {
-                conn->subs.erase(it);
-                break;
-            }
-        }
+}
+
+// Undo a subscribe that never reached the hub. The two locks are taken in turn, never nested.
+void BridgeCore::abandonSubscribe(const std::shared_ptr<Conn>& conn, const std::string& key,
+                                  std::uint64_t sid) {
+    {
+        std::lock_guard<std::mutex> lock(m_subMu);
+        m_subscribers.erase(sid);
     }
+    std::lock_guard<std::mutex> lock(conn->subMu);
+    conn->subs.release(key, sid);
 }
 
 std::string BridgeCore::onGet(const std::string& path, int* status) {
@@ -436,34 +446,33 @@ void BridgeCore::handleOne(const std::shared_ptr<Conn>& conn, const nlohmann::js
             return;
         }
         const std::string key = t.subscription.dump();
+        const std::uint64_t sid = m_nextSubscriberId.fetch_add(1);
+        SubscriptionTable::Claim claim;
         {
             std::lock_guard<std::mutex> lock(conn->subMu);
-            if (static_cast<int>(conn->subs.size()) >= m_cfg.limits.maxSubscriptionsPerConnection) {
-                batch->fill(slot, makeError(id, {kOverloaded, LogosErrorCode::NotReady,
-                                                 "too many subscriptions"}));
-                return;
-            }
-            // Re-subscribing the same id is idempotent and must not create a
-            // second upstream subscriber or double-deliver.
-            auto existing = conn->subs.find(key);
-            if (existing != conn->subs.end()) {
-                batch->fill(slot, makeResult(id, nlohmann::json{
-                    {"subscription", t.subscription}, {"operation", "subscribe"},
-                    {"module", t.module}, {"event", t.event}, {"state", "active"}}));
-                return;
-            }
-            conn->subs.emplace(key, std::make_pair(t.module, t.event));
+            claim = conn->subs.claim(key, t.module, t.event, sid,
+                                     m_cfg.limits.maxSubscriptionsPerConnection);
         }
-        const std::uint64_t sid = m_nextSubscriberId.fetch_add(1);
+        if (claim == SubscriptionTable::Claim::Full) {
+            batch->fill(slot, makeError(id, {kOverloaded, LogosErrorCode::NotReady,
+                                             "too many subscriptions"}));
+            return;
+        }
+        // Re-subscribing the same id is idempotent and must not create a
+        // second upstream subscriber or double-deliver.
+        if (claim == SubscriptionTable::Claim::Duplicate) {
+            batch->fill(slot, makeResult(id, nlohmann::json{
+                {"subscription", t.subscription}, {"operation", "subscribe"},
+                {"module", t.module}, {"event", t.event}, {"state", "active"}}));
+            return;
+        }
         {
             std::lock_guard<std::mutex> lock(m_subMu);
             m_subscribers[sid] = Subscriber{conn, t.subscription, t.module, t.event};
         }
-        const bool queued = m_pump.submit([this, t, sid, id, batch, slot] {
-            const bool ok = m_hub.add(t.module, t.event, sid);
-            if (!ok) {
-                std::lock_guard<std::mutex> lock(m_subMu);
-                m_subscribers.erase(sid);
+        const bool queued = m_pump.submit([this, conn, key, t, sid, id, batch, slot] {
+            if (!m_hub.add(t.module, t.event, sid)) {
+                abandonSubscribe(conn, key, sid);
                 batch->fill(slot, makeError(id, notFound()));
                 return;
             }
@@ -474,8 +483,10 @@ void BridgeCore::handleOne(const std::shared_ptr<Conn>& conn, const nlohmann::js
                 {"subscription", t.subscription}, {"operation", "subscribe"},
                 {"module", t.module}, {"event", t.event}, {"state", "registered"}}));
         });
-        if (!queued)
+        if (!queued) {
+            abandonSubscribe(conn, key, sid);
             batch->fill(slot, makeError(id, {kShuttingDown, LogosErrorCode::NotReady, "shutting down"}));
+        }
         return;
     }
 
@@ -484,23 +495,19 @@ void BridgeCore::handleOne(const std::shared_ptr<Conn>& conn, const nlohmann::js
         if (!parseSubscribeTarget(req.params, &t, &err, /*requireEvent=*/false)) {
             batch->fill(slot, makeError(id, err)); return;
         }
-        const std::string key = t.subscription.dump();
-        std::string module, event;
+        SubscriptionTable::Entry held;
+        bool found = false;
         {
             std::lock_guard<std::mutex> lock(conn->subMu);
-            auto it = conn->subs.find(key);
-            if (it != conn->subs.end()) { module = it->second.first; event = it->second.second; conn->subs.erase(it); }
+            found = conn->subs.take(t.subscription.dump(), &held);
         }
-        std::uint64_t sid = 0;
-        {
-            std::lock_guard<std::mutex> lock(m_subMu);
-            for (auto it = m_subscribers.begin(); it != m_subscribers.end(); ++it) {
-                if (it->second.conn.lock() == conn && it->second.clientId == t.subscription) {
-                    sid = it->first; m_subscribers.erase(it); break;
-                }
+        if (found) {
+            {
+                std::lock_guard<std::mutex> lock(m_subMu);
+                m_subscribers.erase(held.owner);
             }
+            m_hub.remove(held.module, held.event, held.owner);
         }
-        if (sid) m_hub.remove(module, event, sid);
         // Idempotent: an unknown id is acked, not an error.
         batch->fill(slot, makeResult(id, nlohmann::json{
             {"subscription", t.subscription}, {"operation", "unsubscribe"}}));

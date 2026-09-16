@@ -14,6 +14,7 @@ logos_test(
         test_error_map.cpp
         test_peer_slots.cpp
         test_rpc_dispatcher.cpp
+        test_subscription_table.cpp
     EXTRA_INCLUDES
         ../src
 )
