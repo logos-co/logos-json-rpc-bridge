@@ -5,13 +5,16 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
 #include "bridge_config.h"
+#include "lidl_contract.h"
 
 namespace bridge {
 
@@ -85,6 +88,112 @@ inline bool parseLiveReport(const nlohmann::json& iface, LiveReport* out) {
     return true;
 }
 
+// A zero-parameter live method named "lidl". The Qt glue lists it as QString
+// and cpp-sdk as tstr, so the return spelling is ignored.
+inline bool lidlPresent(const LiveReport& live) {
+    for (const auto& m : live.methods)
+        if (m.name == "lidl" && m.params.empty()) return true;
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// The lidl() answer
+// ---------------------------------------------------------------------------
+
+constexpr std::size_t kMaxContractBytes = 4 * 1024 * 1024;
+
+// Well-formed UTF-8: no overlongs, surrogates, or code points past U+10FFFF.
+inline bool isValidUtf8(const std::string& s) {
+    const auto* p = reinterpret_cast<const unsigned char*>(s.data());
+    const auto* end = p + s.size();
+    while (p < end) {
+        const unsigned char c = *p;
+        if (c < 0x80) { ++p; continue; }
+        std::size_t n = 0;
+        unsigned char lo = 0x80, hi = 0xBF;   // bounds for the first continuation byte
+        if (c >= 0xC2 && c <= 0xDF) { n = 1; }
+        else if (c == 0xE0) { n = 2; lo = 0xA0; }
+        else if (c == 0xED) { n = 2; hi = 0x9F; }
+        else if (c >= 0xE1 && c <= 0xEF) { n = 2; }
+        else if (c == 0xF0) { n = 3; lo = 0x90; }
+        else if (c == 0xF4) { n = 3; hi = 0x8F; }
+        else if (c >= 0xF1 && c <= 0xF3) { n = 3; }
+        else return false;
+        if (static_cast<std::size_t>(end - p) <= n) return false;
+        if (p[1] < lo || p[1] > hi) return false;
+        for (std::size_t i = 2; i <= n; ++i)
+            if (p[i] < 0x80 || p[i] > 0xBF) return false;
+        p += n + 1;
+    }
+    return true;
+}
+
+// A lidl() answer before parsing: the text, or a constant reason. Upstream
+// error detail never reaches a view.
+struct LidlText {
+    bool ok = false;
+    bool retryable = false;   // the call itself failed; the next refresh may do better
+    std::string text;
+    std::string error;
+};
+
+inline LidlText lidlText(bool callOk, const nlohmann::json& value) {
+    LidlText t;
+    if (!callOk) {
+        t.retryable = true;
+        t.error = "lidl() call failed";
+    } else if (!value.is_string()) {
+        t.error = "lidl() did not return a string";
+    } else if (value.get_ref<const std::string&>().size() > kMaxContractBytes) {
+        t.error = "lidl() returned more than 4 MiB";
+    } else if (!isValidUtf8(value.get_ref<const std::string&>())) {
+        t.error = "lidl() returned invalid UTF-8";
+    } else {
+        t.ok = true;
+        t.text = value.get<std::string>();
+    }
+    return t;
+}
+
+// "line:col: message (lidl reader <rev>)". Parser messages quote only the
+// contract, which is public.
+inline std::string contractErrorText(const ContractResult& c, const std::string& readerRev) {
+    std::string where;
+    if (c.errorLine > 0)
+        where = std::to_string(c.errorLine) + ":" + std::to_string(c.errorCol) + ": ";
+    return where + c.error + " (lidl reader " + readerRev + ")";
+}
+
+// A contract the bridge serves and dispatches by. Immutable once built.
+struct TypedContract {
+    std::string version;
+    std::vector<ContractMethod> methods;
+    std::vector<ContractEvent> events;
+    nlohmann::json interface;   // the full AST, never filtered by policy
+
+    const ContractMethod* method(const std::string& name) const {
+        for (const auto& m : methods)
+            if (m.name == name) return &m;
+        return nullptr;
+    }
+    bool declaresEvent(const std::string& name) const {
+        for (const auto& e : events)
+            if (e.name == name) return true;
+        return false;
+    }
+};
+
+// Null when the reader's JSON does not parse back (it always should).
+inline std::shared_ptr<const TypedContract> typedContract(const ContractResult& c) {
+    auto t = std::make_shared<TypedContract>();
+    t->interface = nlohmann::json::parse(c.astJson, nullptr, /*allow_exceptions=*/false);
+    if (t->interface.is_discarded() || !t->interface.is_object()) return nullptr;
+    t->version = c.contractVersion;
+    t->methods = c.methods;
+    t->events = c.events;
+    return t;
+}
+
 // ---------------------------------------------------------------------------
 // Module view and its status machine
 // ---------------------------------------------------------------------------
@@ -97,8 +206,10 @@ struct ModuleView {
     std::uint64_t generation = 0;    // completed discoveries of this module
     bool stale = false;              // the provider went away since; a refresh is due
     std::string interfaceError;      // invalid only
+    std::shared_ptr<const TypedContract> contract;   // ok only
 
     bool resolved() const { return status != InterfaceStatus::Pending; }
+    bool typed() const { return status == InterfaceStatus::Ok && contract != nullptr; }
 };
 
 inline ModuleView pendingView(const std::string& module) {
@@ -120,6 +231,21 @@ inline ModuleView nextView(const ModuleView& prev, InterfaceStatus status, LiveR
 // pending|ok|untyped|invalid -> untyped: a live report and nothing more.
 inline ModuleView untypedView(const ModuleView& prev, LiveReport live) {
     return nextView(prev, InterfaceStatus::Untyped, std::move(live));
+}
+
+// -> invalid: a contract that cannot be served. Gating falls back to live names.
+inline ModuleView invalidView(const ModuleView& prev, LiveReport live, std::string error) {
+    ModuleView v = nextView(prev, InterfaceStatus::Invalid, std::move(live));
+    v.interfaceError = std::move(error);
+    return v;
+}
+
+// -> ok: the contract is served and dispatch follows its declarations.
+inline ModuleView okView(const ModuleView& prev, LiveReport live,
+                         std::shared_ptr<const TypedContract> contract) {
+    ModuleView v = nextView(prev, InterfaceStatus::Ok, std::move(live));
+    v.contract = std::move(contract);
+    return v;
 }
 
 // A lost provider keeps its last view for gating (the upstream call answers
@@ -148,12 +274,20 @@ inline std::chrono::milliseconds retryDelay(int failures) {
 // Gating
 // ---------------------------------------------------------------------------
 
+// ModuleProxy answers these ahead of its gate; lidl() and rpc.schema replace them.
+inline bool isReservedIntrospection(const std::string& method) {
+    return method == "getPluginInterface" || method == "getPluginMethods" ||
+           method == "getPluginEvents";
+}
+
 // Is (module, method) callable by an external client? One boolean on purpose:
 // not exposed, denied and unknown must be indistinguishable from outside.
 inline bool methodPermitted(const BridgeConfig& cfg, const ModuleView& view,
                             const std::string& method) {
     const ExposedModule* em = cfg.find(view.module);
-    if (!em || !em->methodAllowed(method)) return false;   // built-ins bypass policy, not existence
+    if (!em || isReservedIntrospection(method)) return false;
+    if (!em->methodAllowed(method)) return false;   // built-ins bypass policy, not existence
+    if (view.typed()) return view.contract->method(method) != nullptr;
     // Unresolved is not a refusal: "starting" must not look like "forbidden",
     // and the upstream call answers authoritatively.
     if (!view.resolved() || view.live.methods.empty()) return true;
@@ -166,10 +300,39 @@ inline bool eventPermitted(const BridgeConfig& cfg, const ModuleView& view,
                            const std::string& event) {
     const ExposedModule* em = cfg.find(view.module);
     if (!em || !em->events.permits(event)) return false;
+    if (view.typed()) return view.contract->declaresEvent(event);
     // Undeclared (a legacy Qt plugin) or unresolved: the operator's allow list
     // is the override that case exists for.
     if (!view.resolved() || !view.live.eventsDeclared) return true;
     return view.live.hasEvent(event);
+}
+
+// Typed: declaration order; an unknown name or a missing required param fails,
+// a missing optional one is null.
+inline bool typedPositional(const ContractMethod& m, const nlohmann::json& byName,
+                            nlohmann::json* out, std::string* badPath) {
+    for (auto kv = byName.begin(); kv != byName.end(); ++kv) {
+        const bool known = std::any_of(m.params.begin(), m.params.end(),
+            [&](const ContractParam& p) { return p.name == kv.key(); });
+        if (!known) {
+            *badPath = kv.key();
+            return false;
+        }
+    }
+    nlohmann::json arr = nlohmann::json::array();
+    for (const auto& p : m.params) {
+        const auto it = byName.find(p.name);
+        if (it != byName.end()) {
+            arr.push_back(*it);
+        } else if (p.optional) {
+            arr.push_back(nullptr);
+        } else {
+            *badPath = p.name;
+            return false;
+        }
+    }
+    *out = std::move(arr);
+    return true;
 }
 
 // By-name params -> the positional array the ABI takes. False when a name is
@@ -177,6 +340,14 @@ inline bool eventPermitted(const BridgeConfig& cfg, const ModuleView& view,
 inline bool toPositional(const ModuleView& view, const std::string& method,
                          const nlohmann::json& byName, nlohmann::json* out,
                          std::string* badPath) {
+    if (view.typed()) {
+        const ContractMethod* cm = view.contract->method(method);
+        if (!cm) {
+            *badPath = method;
+            return false;
+        }
+        return typedPositional(*cm, byName, out, badPath);
+    }
     const LiveMember* m = view.resolved() ? view.live.method(method) : nullptr;
     if (!m) {
         *badPath = method;
@@ -200,29 +371,33 @@ inline bool toPositional(const ModuleView& view, const std::string& method,
 // ---------------------------------------------------------------------------
 
 // rpc.schema / GET /modules/{m}. A bridge-derived view, never the module's word.
-inline nlohmann::json describeView(const ExposedModule& em, const ModuleView& view) {
+inline nlohmann::json describeView(const ExposedModule& em, const ModuleView& view,
+                                   bool withInterface = true) {
     nlohmann::json methods = nlohmann::json::array();
     for (const auto& m : view.live.methods)
         if (em.methodAllowed(m.name)) methods.push_back(m.name);
     nlohmann::json events = nlohmann::json::array();
     for (const auto& e : view.live.events)
         if (em.events.permits(e.name)) events.push_back(e.name);
-    return nlohmann::json{
+    nlohmann::json d{
         {"module", view.module},
         {"resolved", view.resolved()},
         {"events_declared", view.live.eventsDeclared},
         {"methods", std::move(methods)},
         {"events", std::move(events)},
-        {"source", "getPluginInterface"},
+        {"source", view.typed() ? "lidl" : "getPluginInterface"},
         {"authoritative", false},
         {"interface_status", interfaceStatusName(view.status)},
         {"stale", view.stale},
     };
+    if (withInterface && view.typed()) d["interface"] = view.contract->interface;
+    if (view.status == InterfaceStatus::Invalid) d["interface_error"] = view.interfaceError;
+    return d;
 }
 
 // rpc.list_modules / GET /modules entries: the same view, minus the contract.
 inline nlohmann::json listView(const ExposedModule& em, const ModuleView& view) {
-    return describeView(em, view);
+    return describeView(em, view, /*withInterface=*/false);
 }
 
 } // namespace bridge

@@ -4,9 +4,10 @@
 // not up yet, and rediscover after a provider loss. Every decision is in
 // discovery_model.h; every upstream call goes through DiscoveryIo.
 //
-// The live report comes from an ordinary by-name `getPluginInterface` call,
-// which ModuleProxy answers ahead of its authorization gate, methods AND
-// events in one array. LpClient::getMethods() is a stub on qt_remote.
+// Per module: `getPluginInterface` (the live report, which ModuleProxy answers
+// ahead of its authorization gate; LpClient::getMethods() is a stub on
+// qt_remote), then, when the module lists a zero-parameter `lidl`, its
+// canonical contract. Internal calls ignore the exposure policy.
 //
 // Calls are asynchronous and each continuation is posted to the pump, so a
 // module that is down never holds a pump thread for the call timeout.
@@ -24,6 +25,7 @@
 
 #include "bridge_config.h"
 #include "discovery_model.h"
+#include "lidl_contract.h"
 
 namespace bridge {
 
@@ -204,7 +206,36 @@ private:
             missed(module, attempt);
             return;
         }
-        publish(module, attempt, untypedView(*view(module), std::move(live)));
+        if (!lidlPresent(live)) {
+            publish(module, attempt, untypedView(*view(module), std::move(live)));
+            return;
+        }
+        call(module, attempt, "lidl", [this, module, attempt, live](CallOutcome a) mutable {
+            onContract(module, attempt, std::move(live), std::move(a));
+        });
+    }
+
+    void onContract(const std::string& module, std::uint64_t attempt, LiveReport live,
+                    CallOutcome answer) {
+        const LidlText text = lidlText(answer.ok(), answer.value);
+        if (!text.ok) {
+            publish(module, attempt, invalidView(*view(module), std::move(live), text.error),
+                    /*retry=*/text.retryable);
+            return;
+        }
+        const ContractResult contract = readContract(text.text, module);
+        if (!contract.ok) {
+            publish(module, attempt, invalidView(*view(module), std::move(live),
+                                                 contractErrorText(contract, lidlReaderRev())));
+            return;
+        }
+        auto typed = typedContract(contract);
+        if (!typed) {
+            publish(module, attempt, invalidView(*view(module), std::move(live),
+                                                 "the contract could not be served"));
+            return;
+        }
+        publish(module, attempt, okView(*view(module), std::move(live), std::move(typed)));
     }
 
     // No live report: keep the view (pending, or stale) and retry with backoff.
@@ -222,15 +253,23 @@ private:
         scheduleRefresh(module, delay);
     }
 
-    void publish(const std::string& module, std::uint64_t attempt, ModuleView next) {
-        std::lock_guard<std::mutex> lock(m_mu);
-        Slot* s = slot(module);
-        if (!s || s->attempt != attempt) return;
-        next.generation = s->view->generation + 1;   // counted here, not from the caller's snapshot
-        next.stale = false;
-        s->view = std::make_shared<const ModuleView>(std::move(next));
-        s->inFlight = false;
-        s->failures = 0;
+    // `retry`: the view stands, but the failure was transient; try again with backoff.
+    void publish(const std::string& module, std::uint64_t attempt, ModuleView next,
+                 bool retry = false) {
+        std::chrono::milliseconds delay{};
+        {
+            std::lock_guard<std::mutex> lock(m_mu);
+            Slot* s = slot(module);
+            if (!s || s->attempt != attempt) return;
+            next.generation = s->view->generation + 1;   // counted here, not from a snapshot
+            next.stale = false;
+            s->view = std::make_shared<const ModuleView>(std::move(next));
+            s->inFlight = false;
+            s->failures = retry ? s->failures + 1 : 0;
+            s->retryArmed = retry;
+            delay = retryDelay(s->failures);
+        }
+        if (retry) scheduleRefresh(module, delay);
     }
 
     void scheduleRefresh(const std::string& module, std::chrono::milliseconds delay) {

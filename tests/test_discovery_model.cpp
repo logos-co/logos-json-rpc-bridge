@@ -235,3 +235,269 @@ LOGOS_TEST(a_pending_view_reports_nothing_resolved) {
     LOGOS_ASSERT_EQ(d["interface_status"].get<std::string>(), std::string("pending"));
     LOGOS_ASSERT_TRUE(d["methods"].empty());
 }
+
+// ── typed discovery: presence and the lidl() answer ─────────────────────────
+
+LOGOS_TEST(lidl_presence_is_a_zero_parameter_method_of_any_return_spelling) {
+    LOGOS_ASSERT_TRUE(lidlPresent(live(R"([{"name":"lidl","returnType":"QString"}])")));
+    LOGOS_ASSERT_TRUE(lidlPresent(live(R"([{"name":"lidl","returnType":"tstr","parameters":[]}])")));
+    LOGOS_ASSERT_FALSE(lidlPresent(live(R"([{"name":"lidl","parameters":[{"name":"x"}]}])")));
+    LOGOS_ASSERT_FALSE(lidlPresent(live(R"([{"type":"event","name":"lidl"}])")));
+    LOGOS_ASSERT_FALSE(lidlPresent(live(kProviderIface)));
+    // A Qt clone with parameters does not hide a zero-parameter entry.
+    LOGOS_ASSERT_TRUE(lidlPresent(
+        live(R"([{"name":"lidl","parameters":[{"name":"x"}]},{"name":"lidl"}])")));
+}
+
+LOGOS_TEST(utf8_validation_rejects_malformed_sequences) {
+    LOGOS_ASSERT_TRUE(isValidUtf8(""));
+    LOGOS_ASSERT_TRUE(isValidUtf8("plain ascii"));
+    LOGOS_ASSERT_TRUE(isValidUtf8("en dash \xe2\x80\x93 and \xf0\x9f\x98\x80"));
+    LOGOS_ASSERT_TRUE(isValidUtf8("\xed\x9f\xbf"));        // U+D7FF
+    LOGOS_ASSERT_TRUE(isValidUtf8("\xf4\x8f\xbf\xbf"));    // U+10FFFF
+    LOGOS_ASSERT_FALSE(isValidUtf8("\xff"));
+    LOGOS_ASSERT_FALSE(isValidUtf8("\x80"));
+    LOGOS_ASSERT_FALSE(isValidUtf8("\xc0\xaf"));           // overlong '/'
+    LOGOS_ASSERT_FALSE(isValidUtf8("\xe0\x80\xaf"));       // overlong
+    LOGOS_ASSERT_FALSE(isValidUtf8("\xed\xa0\x80"));       // surrogate U+D800
+    LOGOS_ASSERT_FALSE(isValidUtf8("\xf4\x90\x80\x80"));   // past U+10FFFF
+    LOGOS_ASSERT_FALSE(isValidUtf8("\xe2\x80"));           // truncated
+    LOGOS_ASSERT_FALSE(isValidUtf8("ok\xe2\x28\xa1"));     // bad continuation
+}
+
+LOGOS_TEST(a_lidl_answer_is_text_or_a_constant_reason) {
+    const LidlText good = lidlText(true, nlohmann::json("module m {\n}\n"));
+    LOGOS_ASSERT_TRUE(good.ok);
+    LOGOS_ASSERT_EQ(good.text, std::string("module m {\n}\n"));
+
+    const LidlText failed = lidlText(false, nlohmann::json("/nix/store/leak"));
+    LOGOS_ASSERT_FALSE(failed.ok);
+    LOGOS_ASSERT_TRUE(failed.retryable);
+    LOGOS_ASSERT_EQ(failed.error, std::string("lidl() call failed"));
+
+    const LidlText notString = lidlText(true, j(R"({"text":"x"})"));
+    LOGOS_ASSERT_FALSE(notString.ok);
+    LOGOS_ASSERT_FALSE(notString.retryable);
+    LOGOS_ASSERT_EQ(notString.error, std::string("lidl() did not return a string"));
+    LOGOS_ASSERT_FALSE(lidlText(true, nlohmann::json()).ok);
+
+    const LidlText huge = lidlText(true, nlohmann::json(std::string(kMaxContractBytes + 1, 'x')));
+    LOGOS_ASSERT_EQ(huge.error, std::string("lidl() returned more than 4 MiB"));
+    LOGOS_ASSERT_TRUE(lidlText(true, nlohmann::json(std::string(kMaxContractBytes, 'x'))).ok);
+
+    const LidlText bad = lidlText(true, nlohmann::json(std::string("module \xff")));
+    LOGOS_ASSERT_EQ(bad.error, std::string("lidl() returned invalid UTF-8"));
+}
+
+LOGOS_TEST(a_contract_error_names_its_position_and_the_reader) {
+    ContractResult parse;
+    parse.error = "expected identifier";
+    parse.errorLine = 3;
+    parse.errorCol = 10;
+    LOGOS_ASSERT_EQ(contractErrorText(parse, "9df8e00"),
+                    std::string("3:10: expected identifier (lidl reader 9df8e00)"));
+    ContractResult other;
+    other.error = "the contract declares module 'a', not 'b'";
+    LOGOS_ASSERT_EQ(contractErrorText(other, "9df8e00"),
+                    std::string("the contract declares module 'a', not 'b' (lidl reader 9df8e00)"));
+}
+
+// ── typed discovery: status machine, gating, views ──────────────────────────
+
+namespace {
+
+// greet(who, ?style), plus the injected built-ins; one event.
+std::shared_ptr<const TypedContract> contractFor(const std::string& module) {
+    ContractResult c;
+    c.ok = true;
+    c.contractVersion = "1.2.3";
+    c.methods = {
+        {"greet", false, {{"who", false}, {"style", true}}},
+        {"internalReset", false, {}},
+        {"name", true, {}}, {"version", true, {}}, {"lidl", true, {}},
+    };
+    c.events = {{"greeted", {{"who", false}}}};
+    c.astJson = std::string(R"({"name":")") + module + R"(","methods":[],"events":[]})";
+    return typedContract(c);
+}
+
+const char* kTypedIface = R"json([
+  {"name":"greet","parameters":[{"name":"who"},{"name":"style"}]},
+  {"name":"internalReset"},
+  {"name":"undeclaredExtra"},
+  {"name":"name"},{"name":"version"},{"name":"lidl","returnType":"QString"},
+  {"type":"event","name":"greeted","parameters":[{"name":"who"}]}
+])json";
+
+ModuleView typed(const std::string& module) {
+    return okView(pendingView(module), live(kTypedIface), contractFor(module));
+}
+
+} // namespace
+
+LOGOS_TEST(a_typed_contract_parses_its_ast_and_rejects_garbage) {
+    LOGOS_ASSERT_TRUE(contractFor("m1") != nullptr);
+    LOGOS_ASSERT_EQ(contractFor("m1")->interface["name"].get<std::string>(), std::string("m1"));
+    ContractResult broken;
+    broken.astJson = "not json";
+    LOGOS_ASSERT_TRUE(typedContract(broken) == nullptr);
+    broken.astJson = "[1]";
+    LOGOS_ASSERT_TRUE(typedContract(broken) == nullptr);
+}
+
+LOGOS_TEST(the_status_machine_moves_between_typed_and_untyped_across_reloads) {
+    ModuleView v = pendingView("m1");
+    v = okView(v, live(kTypedIface), contractFor("m1"));
+    LOGOS_ASSERT_EQ(std::string(interfaceStatusName(v.status)), std::string("ok"));
+    LOGOS_ASSERT_TRUE(v.typed());
+    v = staleView(v);
+    LOGOS_ASSERT_TRUE(v.stale);
+    LOGOS_ASSERT_TRUE(v.typed());   // gating keeps the contract until rediscovery
+    v = untypedView(v, live(kProviderIface));   // reloaded from an older build
+    LOGOS_ASSERT_EQ(std::string(interfaceStatusName(v.status)), std::string("untyped"));
+    LOGOS_ASSERT_FALSE(v.typed());
+    LOGOS_ASSERT_TRUE(v.contract == nullptr);
+    v = okView(staleView(v), live(kTypedIface), contractFor("m1"));
+    LOGOS_ASSERT_TRUE(v.typed());
+    LOGOS_ASSERT_FALSE(v.stale);
+    LOGOS_ASSERT_EQ(v.generation, static_cast<std::uint64_t>(3));
+}
+
+LOGOS_TEST(an_invalid_view_keeps_its_live_report_and_its_reason) {
+    const ModuleView v = invalidView(pendingView("m1"), live(kTypedIface), "lidl() call failed");
+    LOGOS_ASSERT_EQ(std::string(interfaceStatusName(v.status)), std::string("invalid"));
+    LOGOS_ASSERT_FALSE(v.typed());
+    LOGOS_ASSERT_EQ(v.interfaceError, std::string("lidl() call failed"));
+    LOGOS_ASSERT_TRUE(v.live.hasMethod("undeclaredExtra"));
+}
+
+// Typed: callable iff declared AND permitted; the live list no longer decides.
+LOGOS_TEST(a_typed_module_gates_calls_by_its_declarations_and_policy) {
+    const BridgeConfig cfg = config(
+        R"({"expose":{"modules":[{"name":"m1","methods":{"deny":["internalReset"]}}]}})");
+    const ModuleView v = typed("m1");
+    LOGOS_ASSERT_TRUE(methodPermitted(cfg, v, "greet"));
+    LOGOS_ASSERT_FALSE(methodPermitted(cfg, v, "internalReset"));   // declared, denied
+    LOGOS_ASSERT_FALSE(methodPermitted(cfg, v, "undeclaredExtra"));  // live only
+    LOGOS_ASSERT_FALSE(methodPermitted(cfg, v, "missing"));
+    for (const char* b : {"name", "version", "lidl"})
+        LOGOS_ASSERT_TRUE(methodPermitted(cfg, v, b));
+}
+
+LOGOS_TEST(a_typed_allow_list_still_leaves_the_built_ins_callable) {
+    const BridgeConfig cfg =
+        config(R"({"expose":{"modules":[{"name":"m1","methods":{"allow":["greet"]}}]}})");
+    const ModuleView v = typed("m1");
+    LOGOS_ASSERT_TRUE(methodPermitted(cfg, v, "lidl"));
+    LOGOS_ASSERT_TRUE(methodPermitted(cfg, v, "greet"));
+    LOGOS_ASSERT_FALSE(methodPermitted(cfg, v, "internalReset"));
+}
+
+// Non-typed statuses keep today's live-name gating; built-ins still need to exist.
+LOGOS_TEST(an_invalid_module_gates_by_live_names) {
+    const BridgeConfig cfg =
+        config(R"({"expose":{"modules":[{"name":"m1","methods":{"allow":["greet"]}}]}})");
+    const ModuleView v = invalidView(pendingView("m1"), live(kTypedIface), "bad");
+    LOGOS_ASSERT_TRUE(methodPermitted(cfg, v, "lidl"));
+    LOGOS_ASSERT_FALSE(methodPermitted(cfg, v, "undeclaredExtra"));   // not allowed
+    const ModuleView bare = invalidView(pendingView("m1"), live(R"([{"name":"greet"}])"), "bad");
+    LOGOS_ASSERT_FALSE(methodPermitted(cfg, bare, "lidl"));
+}
+
+LOGOS_TEST(a_typed_module_gates_events_by_its_declarations) {
+    const BridgeConfig cfg = config(
+        R"({"expose":{"modules":["m1",{"name":"m2","events":{"deny":["greeted"]}}]}})");
+    LOGOS_ASSERT_TRUE(eventPermitted(cfg, typed("m1"), "greeted"));
+    LOGOS_ASSERT_FALSE(eventPermitted(cfg, typed("m1"), "undeclared"));
+    LOGOS_ASSERT_FALSE(eventPermitted(cfg, typed("m2"), "greeted"));
+    // Untagged live events do not matter once the contract declares them.
+    const ModuleView untagged = okView(pendingView("m1"), live(R"([{"name":"greet"}])"),
+                                       contractFor("m1"));
+    LOGOS_ASSERT_TRUE(eventPermitted(cfg, untagged, "greeted"));
+    LOGOS_ASSERT_FALSE(eventPermitted(cfg, untagged, "other"));
+}
+
+// ModuleProxy answers these before its gate: refused in every state, any policy.
+LOGOS_TEST(reserved_introspection_is_refused_in_every_state) {
+    const BridgeConfig cfg = config(
+        R"({"expose":{"modules":[{"name":"m1","methods":{"allow":)"
+        R"(["getPluginInterface","getPluginMethods","getPluginEvents","greet"]}}]}})");
+    const char* listed = R"([{"name":"getPluginInterface"},{"name":"getPluginMethods"},)"
+                         R"({"name":"getPluginEvents"},{"name":"greet"}])";
+    const ModuleView states[] = {
+        pendingView("m1"),
+        resolved("m1", listed),
+        invalidView(pendingView("m1"), live(listed), "bad"),
+        okView(pendingView("m1"), live(listed), contractFor("m1")),
+        staleView(resolved("m1", listed)),
+    };
+    for (const ModuleView& v : states) {
+        for (const char* m : {"getPluginInterface", "getPluginMethods", "getPluginEvents"})
+            LOGOS_ASSERT_FALSE(methodPermitted(cfg, v, m));
+        LOGOS_ASSERT_TRUE(methodPermitted(cfg, v, "greet"));
+    }
+}
+
+LOGOS_TEST(typed_by_name_params_follow_the_declarations) {
+    nlohmann::json out;
+    std::string bad;
+    const ModuleView v = typed("m1");
+    LOGOS_ASSERT_TRUE(toPositional(v, "greet", j(R"({"style":"loud","who":"w"})"), &out, &bad));
+    LOGOS_ASSERT_EQ(out.dump(), std::string(R"(["w","loud"])"));
+    // A missing optional param is null; an explicit null passes through.
+    LOGOS_ASSERT_TRUE(toPositional(v, "greet", j(R"({"who":"w"})"), &out, &bad));
+    LOGOS_ASSERT_EQ(out.dump(), std::string(R"(["w",null])"));
+    LOGOS_ASSERT_TRUE(toPositional(v, "greet", j(R"({"who":null})"), &out, &bad));
+    LOGOS_ASSERT_TRUE(toPositional(v, "lidl", j("{}"), &out, &bad));
+    LOGOS_ASSERT_EQ(out.dump(), std::string("[]"));
+}
+
+LOGOS_TEST(typed_by_name_params_name_what_is_wrong) {
+    nlohmann::json out;
+    std::string bad;
+    const ModuleView v = typed("m1");
+    LOGOS_ASSERT_FALSE(toPositional(v, "greet", j(R"({"style":"loud"})"), &out, &bad));
+    LOGOS_ASSERT_EQ(bad, std::string("who"));   // missing required
+    LOGOS_ASSERT_FALSE(toPositional(v, "greet", j(R"({"who":"w","colour":1})"), &out, &bad));
+    LOGOS_ASSERT_EQ(bad, std::string("colour"));   // unknown name
+    LOGOS_ASSERT_FALSE(toPositional(v, "undeclaredExtra", j("{}"), &out, &bad));
+    LOGOS_ASSERT_EQ(bad, std::string("undeclaredExtra"));
+}
+
+LOGOS_TEST(the_schema_view_serves_the_contract_and_the_list_view_does_not) {
+    const BridgeConfig cfg = config(R"({"expose":{"modules":["m1"]}})");
+    const ModuleView v = typed("m1");
+    const nlohmann::json schema = describeView(*cfg.find("m1"), v);
+    LOGOS_ASSERT_EQ(schema["interface_status"].get<std::string>(), std::string("ok"));
+    LOGOS_ASSERT_EQ(schema["source"].get<std::string>(), std::string("lidl"));
+    LOGOS_ASSERT_FALSE(schema["authoritative"].get<bool>());
+    LOGOS_ASSERT_EQ(schema["interface"]["name"].get<std::string>(), std::string("m1"));
+    LOGOS_ASSERT_FALSE(schema.contains("interface_error"));
+    const nlohmann::json listed = listView(*cfg.find("m1"), v);
+    LOGOS_ASSERT_FALSE(listed.contains("interface"));
+    LOGOS_ASSERT_EQ(listed["interface_status"].get<std::string>(), std::string("ok"));
+    LOGOS_ASSERT_EQ(listed["source"].get<std::string>(), std::string("lidl"));
+}
+
+// The contract is public: a denied member is still in `interface`.
+LOGOS_TEST(the_served_contract_is_never_filtered_by_policy) {
+    const BridgeConfig all = config(R"({"expose":{"modules":["m1"]}})");
+    const BridgeConfig some = config(
+        R"({"expose":{"modules":[{"name":"m1","methods":{"allow":[]},"events":{"allow":[]}}]}})");
+    const ModuleView v = typed("m1");
+    LOGOS_ASSERT_EQ(describeView(*some.find("m1"), v)["interface"].dump(),
+                    describeView(*all.find("m1"), v)["interface"].dump());
+}
+
+LOGOS_TEST(invalid_and_untyped_views_carry_no_contract) {
+    const BridgeConfig cfg = config(R"({"expose":{"modules":["m1"]}})");
+    const nlohmann::json bad =
+        describeView(*cfg.find("m1"), invalidView(pendingView("m1"), live("[]"), "why"));
+    LOGOS_ASSERT_EQ(bad["interface_status"].get<std::string>(), std::string("invalid"));
+    LOGOS_ASSERT_EQ(bad["interface_error"].get<std::string>(), std::string("why"));
+    LOGOS_ASSERT_FALSE(bad.contains("interface"));
+    LOGOS_ASSERT_EQ(bad["source"].get<std::string>(), std::string("getPluginInterface"));
+    const nlohmann::json plain = describeView(*cfg.find("m1"), resolved("m1", kProviderIface));
+    LOGOS_ASSERT_FALSE(plain.contains("interface"));
+    LOGOS_ASSERT_FALSE(plain.contains("interface_error"));
+}

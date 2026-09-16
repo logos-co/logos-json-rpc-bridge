@@ -12,6 +12,7 @@
 #include "bridge_config.h"
 #include "discovery.h"
 #include "error_map.h"
+#include "lidl_contract.h"
 #include "retry_scheduler.h"
 #include "rpc_dispatcher.h"
 #include "upstream.h"
@@ -594,6 +595,7 @@ nlohmann::json BridgeCore::info() const {
         {"upstream_subscriptions", m_hub.upstreamCount()},
         {"protocol_version", LOGOS_PROTOCOL_VERSION_STRING},
         {"subscription_continuity", kHasSubscriptionContinuity},
+        {"lidl_reader", lidlReaderVersion()},
     };
 }
 
@@ -634,6 +636,7 @@ std::string JsonRpcBridgeImpl::getInfo() {
             {"running", false},
             {"protocol_version", LOGOS_PROTOCOL_VERSION_STRING},
             {"subscription_continuity", kHasSubscriptionContinuity},
+            {"lidl_reader", lidlReaderVersion()},
         }.dump();
     }
     return m_core->info().dump();

@@ -18,9 +18,20 @@ logos_module(
     SOURCES
         src/json_rpc_bridge_impl.h
         src/json_rpc_bridge_impl.cpp
+        src/lidl_contract.h
+        src/lidl_contract.cpp
         src/ws_server.h
         src/ws_server.cpp
+    # logos-lidl's static archives; the C bridge first, it depends on the core.
+    EXTERNAL_LIBS
+        logos_lidl_c
+        logos_lidl
 )
+
+# getInfo().lidl_reader. The flake exports both; an ad-hoc build reports "unknown".
+target_compile_definitions(json_rpc_bridge_module_plugin PRIVATE
+    LOGOS_LIDL_REV="$ENV{LOGOS_LIDL_REV}"
+    LOGOS_LIDL_VERSION="$ENV{LOGOS_LIDL_VERSION}")
 
 # Embedded HTTP + WebSocket server: libwebsockets, which serves both on ONE
 # context and one port and has a documented cross-thread wake

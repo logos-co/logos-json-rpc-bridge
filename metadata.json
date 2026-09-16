@@ -16,7 +16,10 @@
       "build": ["pkg-config"],
       "runtime": ["libwebsockets", "openssl", "nlohmann_json"]
     },
-    "external_libraries": [],
+    "external_libraries": [
+      { "name": "logos_lidl_c" },
+      { "name": "logos_lidl" }
+    ],
     "cmake": {
       "find_packages": [],
       "extra_sources": [],
