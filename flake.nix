@@ -26,21 +26,15 @@
     let
       lidlRev = logos-lidl.shortRev or logos-lidl.dirtyShortRev or "unknown";
 
-      # logos-lidl's two static archives. mkLogosModuleTests passes a bare flake
-      # input through unresolved, so the tests name the package.
+      # logos-lidl's two static archives.
       lidlModuleLibs = { logos_lidl_c = logos-lidl; logos_lidl = logos-lidl; };
-      lidlPackage = { input = logos-lidl; packages.default = "logos-lidl"; };
       # The unit tests also run json-rpc-bridge-docs in-process, so they link liblgx.
-      testLibs = {
-        logos_lidl_c = lidlPackage;
-        logos_lidl = lidlPackage;
+      testLibs = lidlModuleLibs // {
         lgx = { input = logos-package; packages.default = "lib"; };
       };
 
-      # CMake reads include/lidl/ from the store. The backend's recursive ./lib staging
-      # copies a read-only lib/cmake/ that nixpkgs' fixCmakeFiles cannot rewrite.
+      # CMake reads include/lidl/ from the store.
       lidlPreConfigure = { externalLibs }: ''
-        if [ -d lib/cmake ]; then chmod -R u+w lib/cmake && rm -rf lib/cmake; fi
         export LOGOS_EXT_ROOT_LOGOS_LIDL="${externalLibs.logos_lidl}"
         export LOGOS_EXT_ROOT_LOGOS_LIDL_C="${externalLibs.logos_lidl_c}"
         export LOGOS_LIDL_REV="${lidlRev}"

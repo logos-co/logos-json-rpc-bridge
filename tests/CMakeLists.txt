@@ -4,13 +4,11 @@ project(JsonRpcBridgeTests LANGUAGES CXX)
 include(LogosTest)
 
 # Pure layers only: no sockets, threads or IPC. lidl_contract.cpp is the one
-# source that links logos-lidl, and the docs CLI runs in-process against liblgx;
-# the flake exports the roots of both.
-set(LIDL_ROOT "$ENV{LOGOS_EXT_ROOT_LOGOS_LIDL}")
-set(LIDL_C_ROOT "$ENV{LOGOS_EXT_ROOT_LOGOS_LIDL_C}")
+# source that links logos-lidl, and the docs CLI runs in-process against liblgx,
+# whose root the flake exports.
 set(LGX_ROOT "$ENV{LOGOS_EXT_ROOT_LGX}")
-if(NOT LIDL_ROOT OR NOT LIDL_C_ROOT OR NOT LGX_ROOT)
-    message(FATAL_ERROR "LOGOS_EXT_ROOT_{LOGOS_LIDL,LOGOS_LIDL_C,LGX} are not set; build the tests through the flake")
+if(NOT LGX_ROOT)
+    message(FATAL_ERROR "LOGOS_EXT_ROOT_LGX is not set; build the tests through the flake")
 endif()
 find_library(LGX_LIBRARY NAMES lgx PATHS "${LGX_ROOT}/lib" NO_DEFAULT_PATH REQUIRED)
 include(${CMAKE_CURRENT_SOURCE_DIR}/../tools/LgxFeatures.cmake)
@@ -48,12 +46,13 @@ logos_test(
     EXTRA_INCLUDES
         ../src
         ../tools
-        ${LIDL_ROOT}/include
         ${LGX_ROOT}/include
     EXTRA_LINK_LIBS
-        ${LIDL_C_ROOT}/lib/liblogos_lidl_c.a
-        ${LIDL_ROOT}/lib/liblogos_lidl.a
         ${LGX_LIBRARY}
+    # logos-lidl's static archives; the C bridge first, it depends on the core.
+    EXTERNAL_LIBS
+        logos_lidl_c
+        logos_lidl
 )
 # Fixtures and goldens are read from the source tree, which the nix check builds in.
 target_compile_definitions(json_rpc_bridge_tests PRIVATE
