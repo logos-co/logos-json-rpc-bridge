@@ -28,6 +28,7 @@ logos_test(
         test_retry_scheduler.cpp
         test_rpc_dispatcher.cpp
         test_subscription_table.cpp
+        test_termination.cpp
     EXTRA_INCLUDES
         ../src
         ${LIDL_ROOT}/include

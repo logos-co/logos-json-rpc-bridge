@@ -259,6 +259,40 @@ LOGOS_TEST(limits_override_defaults_and_reject_non_positive) {
     LOGOS_ASSERT_FALSE(parse(R"({"expose":{"modules":["m1"]},"limits":{"call_timeout_ms":-1}})").ok);
 }
 
+// ── discovery ───────────────────────────────────────────────────────────────
+
+LOGOS_TEST(revalidation_defaults_to_ten_seconds) {
+    auto r = parse(kMinimal);
+    LOGOS_ASSERT_TRUE(r.ok);
+    LOGOS_ASSERT_EQ(r.config.discovery.revalidateMs, 10000);
+    auto empty = parse(R"({"expose":{"modules":["m1"]},"discovery":{}})");
+    LOGOS_ASSERT_TRUE(empty.ok);
+    LOGOS_ASSERT_EQ(empty.config.discovery.revalidateMs, 10000);
+}
+
+LOGOS_TEST(revalidation_accepts_zero_to_disable_and_a_second_or_more) {
+    for (int ms : {0, 1000, 2000, 60000, 2147483647}) {
+        auto r = parse(R"({"expose":{"modules":["m1"]},"discovery":{"revalidate_ms":)" +
+                       std::to_string(ms) + "}}");
+        LOGOS_ASSERT_TRUE(r.ok);
+        LOGOS_ASSERT_EQ(r.config.discovery.revalidateMs, ms);
+    }
+}
+
+// Sub-second polling would hammer every module for little gain; 1..999 is a typo.
+LOGOS_TEST(revalidation_below_a_second_or_malformed_is_refused) {
+    for (const char* v : {"1", "999", "-1", "-1000", "\"2000\"", "1500.5", "true", "null",
+                          "2147483648", "18446744073709551615"}) {
+        auto r = parse(std::string(R"({"expose":{"modules":["m1"]},"discovery":{"revalidate_ms":)") +
+                       v + "}}");
+        LOGOS_ASSERT_FALSE(r.ok);
+        LOGOS_ASSERT_CONTAINS(r.error, "discovery.revalidate_ms");
+    }
+    auto shape = parse(R"({"expose":{"modules":["m1"]},"discovery":[]})");
+    LOGOS_ASSERT_FALSE(shape.ok);
+    LOGOS_ASSERT_CONTAINS(shape.error, "discovery must be an object");
+}
+
 // ── malformed input ─────────────────────────────────────────────────────────
 
 LOGOS_TEST(malformed_json_is_refused_without_throwing) {

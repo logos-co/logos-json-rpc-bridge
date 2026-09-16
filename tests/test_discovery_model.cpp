@@ -741,3 +741,61 @@ LOGOS_TEST(the_digests_do_not_depend_on_policy) {
     LOGOS_ASSERT_TRUE(a["exposure"] != b["exposure"]);
     LOGOS_ASSERT_EQ(b["exposure"]["methods"].dump(), std::string(R"(["name","version","lidl"])"));
 }
+
+// ── revalidation ────────────────────────────────────────────────────────────
+
+LOGOS_TEST(the_live_digest_covers_types_and_order_but_not_key_order) {
+    const std::string a = liveReportDigest(j(R"([{"name":"get","returnType":"QString"}])"));
+    LOGOS_ASSERT_EQ(a, liveReportDigest(j(R"([{"returnType":"QString","name":"get"}])")));
+    LOGOS_ASSERT_NE(a, liveReportDigest(j(R"([{"name":"get","returnType":"int"}])")));
+    LOGOS_ASSERT_NE(a, liveReportDigest(j(R"([{"name":"get","returnType":"QString"},{"name":"x"}])")));
+    LOGOS_ASSERT_NE(liveReportDigest(j(R"([{"name":"a"},{"name":"b"}])")),
+                    liveReportDigest(j(R"([{"name":"b"},{"name":"a"}])")));
+    LOGOS_ASSERT_EQ(live(kProviderIface).sha256, liveReportDigest(j(kProviderIface)));
+    LOGOS_ASSERT_EQ(liveReportDigest(j(kProviderIface)).size(), static_cast<size_t>(64));
+}
+
+LOGOS_TEST(revalidation_refreshes_only_a_changed_report) {
+    const ModuleView v = resolved("m1", kProviderIface);
+    LOGOS_ASSERT_TRUE(revalidation(v, true, "", j(kProviderIface)) == Revalidation::Keep);
+    // Same names, a different parameter type: a different build.
+    const std::string retyped = R"json([
+      {"name":"greet","signature":"greet(int)","returnType":"QString",
+       "parameters":[{"type":"int","name":"who"}]},
+      {"name":"add","parameters":[{"name":"a"},{"name":"b"}]},
+      {"name":"add","parameters":[{"name":"a"}]},
+      {"name":"version","type":"method","returnType":"QString"},
+      {"type":"event","name":"greeted","parameters":[{"name":"who"}]}
+    ])json";
+    LOGOS_ASSERT_TRUE(revalidation(v, true, "", j(retyped)) == Revalidation::Refresh);
+    LOGOS_ASSERT_TRUE(revalidation(v, true, "", j(R"([{"name":"lidl"}])")) == Revalidation::Refresh);
+    LOGOS_ASSERT_TRUE(revalidation(v, true, "", j("[]")) == Revalidation::Refresh);
+}
+
+LOGOS_TEST(revalidation_marks_an_unreachable_module_stale) {
+    const ModuleView v = resolved("m1", kProviderIface);
+    for (const char* code : {"object_unavailable", "timeout", "transport_error"})
+        LOGOS_ASSERT_TRUE(revalidation(v, false, code, nlohmann::json()) == Revalidation::MarkStale);
+    // An answer that is not a live report cannot confirm the view either.
+    LOGOS_ASSERT_TRUE(revalidation(v, true, "", nlohmann::json()) == Revalidation::MarkStale);
+    LOGOS_ASSERT_TRUE(revalidation(v, true, "", j(R"({"name":"x"})")) == Revalidation::MarkStale);
+}
+
+// Inconclusive failures and unresolved views leave everything as it is.
+LOGOS_TEST(revalidation_keeps_the_view_when_it_learns_nothing) {
+    const ModuleView v = resolved("m1", kProviderIface);
+    for (const char* code : {"unauthorized", "call_failed", "invalid_args", "something_new"})
+        LOGOS_ASSERT_TRUE(revalidation(v, false, code, nlohmann::json()) == Revalidation::Keep);
+    LOGOS_ASSERT_TRUE(revalidation(pendingView("m1"), true, "", j("[]")) == Revalidation::Keep);
+    LOGOS_ASSERT_TRUE(revalidation(pendingView("m1"), false, "timeout", nlohmann::json()) ==
+                      Revalidation::Keep);
+}
+
+// Every status carries the digest of the report it was built from.
+LOGOS_TEST(every_resolved_status_keeps_its_live_digest) {
+    const std::string d = liveReportDigest(j(kTypedIface));
+    LOGOS_ASSERT_EQ(okView(pendingView("m1"), live(kTypedIface), contractFor("m1")).live.sha256, d);
+    LOGOS_ASSERT_EQ(invalidView(pendingView("m1"), live(kTypedIface), "x").live.sha256, d);
+    LOGOS_ASSERT_EQ(untypedView(pendingView("m1"), live(kTypedIface)).live.sha256, d);
+    LOGOS_ASSERT_EQ(staleView(untypedView(pendingView("m1"), live(kTypedIface))).live.sha256, d);
+}

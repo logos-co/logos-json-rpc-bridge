@@ -21,6 +21,7 @@ struct FakeIo {
     std::vector<Call> calls;                          // started, not completed
     std::map<std::string, DiscoveryIo::Job> timers;   // key -> job
     std::vector<long> delays;                         // every schedule() delay, in order
+    std::vector<std::string> changed;                 // providerChanged() calls, in order
     bool postAccepts = true;
 
     DiscoveryIo io() {
@@ -40,6 +41,7 @@ struct FakeIo {
             delays.push_back(static_cast<long>(delay.count()));
             return true;
         };
+        io.providerChanged = [this](const std::string& module) { changed.push_back(module); };
         return io;
     }
 
@@ -72,8 +74,11 @@ struct FakeIo {
     }
 };
 
+// Revalidation is off unless a test's config asks for it.
 BridgeConfig config(const std::string& json) {
-    ConfigParseResult r = parseBridgeConfig(json, "json_rpc_bridge");
+    nlohmann::json doc = nlohmann::json::parse(json);
+    if (!doc.contains("discovery")) doc["discovery"] = {{"revalidate_ms", 0}};
+    ConfigParseResult r = parseBridgeConfig(doc.dump(), "json_rpc_bridge");
     if (!r.ok) throw LogosTestFailure("bad test config: " + r.error);
     return r.config;
 }
@@ -528,4 +533,195 @@ LOGOS_TEST(an_untyped_view_is_exposed_from_its_live_names) {
     LOGOS_ASSERT_EQ(listed["exposure"]["events"].dump(), std::string(R"(["greeted"])"));
     LOGOS_ASSERT_TRUE(listed["cross_check"].is_null());
     LOGOS_ASSERT_TRUE(listed["contract_sha256"].is_null());
+}
+
+// ── revalidation ────────────────────────────────────────────────────────────
+
+namespace {
+
+const char* kRevalidating = R"({"expose":{"modules":["m1"]},"discovery":{"revalidate_ms":2000}})";
+const std::string kTimer = Discovery::kRevalidateTimer;
+
+// A typed m1, settled, with the revalidation timer armed and nothing outstanding.
+void settleTyped(FakeIo& fake, Discovery& d) {
+    d.start();
+    discoverTyped(fake, text(kContract));
+    if (status(d, "m1") != "ok") throw LogosTestFailure("m1 did not become ok");
+    if (!fake.calls.empty()) throw LogosTestFailure("calls left outstanding");
+}
+
+} // namespace
+
+LOGOS_TEST(revalidation_runs_on_the_configured_interval_and_re_arms) {
+    const BridgeConfig cfg = config(kRevalidating);
+    FakeIo fake;
+    Discovery d(&cfg, fake.io());
+    settleTyped(fake, d);
+    LOGOS_ASSERT_TRUE(fake.timers.count(kTimer) == 1);
+    LOGOS_ASSERT_EQ(fake.delays.front(), 2000L);
+    LOGOS_ASSERT_TRUE(fake.fire(kTimer));
+    LOGOS_ASSERT_EQ(fake.pending("m1", "getPluginInterface"), static_cast<size_t>(1));
+    LOGOS_ASSERT_TRUE(fake.timers.count(kTimer) == 1);   // the next round is already armed
+    LOGOS_ASSERT_EQ(fake.delays.back(), 2000L);
+}
+
+LOGOS_TEST(an_unchanged_live_report_changes_nothing) {
+    const BridgeConfig cfg = config(kRevalidating);
+    FakeIo fake;
+    Discovery d(&cfg, fake.io());
+    settleTyped(fake, d);
+    const auto before = d.view("m1");
+    for (int round = 0; round < 3; ++round) {
+        LOGOS_ASSERT_TRUE(fake.fire(kTimer));
+        fake.complete("m1", "getPluginInterface", ok(kTypedIface));
+        LOGOS_ASSERT_TRUE(fake.calls.empty());   // no lidl(), no version()
+    }
+    LOGOS_ASSERT_TRUE(d.view("m1") == before);   // the very same snapshot
+    LOGOS_ASSERT_EQ(fake.timers.size(), static_cast<size_t>(1));
+    LOGOS_ASSERT_TRUE(fake.changed.empty());      // and no subscription is ended
+}
+
+// A fast reload onto an older build: nothing reported a loss, the report did change.
+LOGOS_TEST(a_changed_live_report_triggers_a_full_refresh) {
+    const BridgeConfig cfg = config(kRevalidating);
+    FakeIo fake;
+    Discovery d(&cfg, fake.io());
+    settleTyped(fake, d);
+    LOGOS_ASSERT_TRUE(fake.fire(kTimer));
+    fake.complete("m1", "getPluginInterface", ok(kIface));   // no lidl listed any more
+    LOGOS_ASSERT_EQ(status(d, "m1"), std::string("untyped"));
+    LOGOS_ASSERT_EQ(d.view("m1")->generation, static_cast<std::uint64_t>(2));
+    LOGOS_ASSERT_FALSE(d.view("m1")->stale);
+    LOGOS_ASSERT_TRUE(fake.calls.empty());
+
+    // And back: the refresh reads the contract again.
+    LOGOS_ASSERT_TRUE(fake.fire(kTimer));
+    fake.complete("m1", "getPluginInterface", ok(kTypedIface));
+    LOGOS_ASSERT_TRUE(d.view("m1")->stale);   // stale until the contract is read
+    LOGOS_ASSERT_EQ(fake.pending("m1", "lidl"), static_cast<size_t>(1));
+    fake.complete("m1", "lidl", text(kContract));
+    fake.complete("m1", "version", text("1.0.0"));
+    LOGOS_ASSERT_EQ(status(d, "m1"), std::string("ok"));
+    LOGOS_ASSERT_FALSE(d.view("m1")->stale);
+    LOGOS_ASSERT_EQ(fake.changed.size(), static_cast<size_t>(2));   // one per change
+}
+
+LOGOS_TEST(a_type_only_change_is_a_change) {
+    const BridgeConfig cfg = config(kRevalidating);
+    FakeIo fake;
+    Discovery d(&cfg, fake.io());
+    settleTyped(fake, d);
+    std::string retyped = kTypedIface;
+    retyped.replace(retyped.find(R"("returnType":"QString")"), 22, R"("returnType":"tstr")");
+    LOGOS_ASSERT_TRUE(fake.fire(kTimer));
+    fake.complete("m1", "getPluginInterface", ok(retyped));
+    LOGOS_ASSERT_EQ(fake.pending("m1", "lidl"), static_cast<size_t>(1));
+    LOGOS_ASSERT_EQ(fake.changed.size(), static_cast<size_t>(1));
+}
+
+LOGOS_TEST(an_unavailable_module_becomes_stale_and_backs_off) {
+    for (const char* code : {"object_unavailable", "timeout"}) {
+        const BridgeConfig cfg = config(kRevalidating);
+        FakeIo fake;
+        Discovery d(&cfg, fake.io());
+        settleTyped(fake, d);
+        LOGOS_ASSERT_TRUE(fake.fire(kTimer));
+        fake.complete("m1", "getPluginInterface", failed(code));
+        LOGOS_ASSERT_TRUE(d.view("m1")->stale);
+        LOGOS_ASSERT_EQ(status(d, "m1"), std::string("ok"));   // gating keeps the last view
+        LOGOS_ASSERT_EQ(fake.delays.back(), 500L);
+        LOGOS_ASSERT_TRUE(fake.timers.count("m1") == 1);
+        // While the backoff runs, revalidation leaves the module alone.
+        LOGOS_ASSERT_TRUE(fake.fire(kTimer));
+        LOGOS_ASSERT_TRUE(fake.calls.empty());
+        LOGOS_ASSERT_TRUE(fake.fire("m1"));
+        discoverTyped(fake, text(kContract));
+        LOGOS_ASSERT_FALSE(d.view("m1")->stale);
+        LOGOS_ASSERT_TRUE(fake.changed.empty());   // the protocol's loss path owns this case
+    }
+}
+
+LOGOS_TEST(an_inconclusive_failure_keeps_the_view) {
+    const BridgeConfig cfg = config(kRevalidating);
+    FakeIo fake;
+    Discovery d(&cfg, fake.io());
+    settleTyped(fake, d);
+    const auto before = d.view("m1");
+    LOGOS_ASSERT_TRUE(fake.fire(kTimer));
+    fake.complete("m1", "getPluginInterface", failed("unauthorized"));
+    LOGOS_ASSERT_TRUE(d.view("m1") == before);
+    LOGOS_ASSERT_TRUE(fake.timers.count("m1") == 0);
+    LOGOS_ASSERT_TRUE(fake.changed.empty());
+}
+
+LOGOS_TEST(interval_zero_disables_revalidation) {
+    const BridgeConfig cfg =
+        config(R"({"expose":{"modules":["m1"]},"discovery":{"revalidate_ms":0}})");
+    FakeIo fake;
+    Discovery d(&cfg, fake.io());
+    settleTyped(fake, d);
+    LOGOS_ASSERT_TRUE(fake.timers.empty());
+    LOGOS_ASSERT_TRUE(fake.delays.empty());
+}
+
+// A module still being discovered, or already being read, is not read again.
+LOGOS_TEST(revalidation_skips_modules_in_flight_and_does_not_overlap) {
+    const BridgeConfig cfg =
+        config(R"({"expose":{"modules":["m1","m2"]},"discovery":{"revalidate_ms":2000}})");
+    FakeIo fake;
+    Discovery d(&cfg, fake.io());
+    d.start();
+    discoverTyped(fake, text(kContract));   // m1 settles; m2's warm-up stays outstanding
+    LOGOS_ASSERT_TRUE(fake.fire(kTimer));
+    LOGOS_ASSERT_TRUE(fake.fire(kTimer));   // a second round before the first answered
+    LOGOS_ASSERT_EQ(fake.pending("m1", "getPluginInterface"), static_cast<size_t>(1));
+    LOGOS_ASSERT_EQ(fake.pending("m2", "getPluginInterface"), static_cast<size_t>(1));
+    fake.complete("m1", "getPluginInterface", ok(kTypedIface));
+    LOGOS_ASSERT_TRUE(fake.fire(kTimer));   // m1 is free again
+    LOGOS_ASSERT_EQ(fake.pending("m1", "getPluginInterface"), static_cast<size_t>(1));
+}
+
+// A loss that lands while a read is out: the loss wins, and the read is dropped.
+LOGOS_TEST(a_refresh_that_overtakes_a_revalidation_wins) {
+    const BridgeConfig cfg = config(kRevalidating);
+    FakeIo fake;
+    Discovery d(&cfg, fake.io());
+    settleTyped(fake, d);
+    LOGOS_ASSERT_TRUE(fake.fire(kTimer));
+    d.onProviderLost("m1");
+    fake.complete("m1", "getPluginInterface", ok(kIface));   // the read, answered late
+    LOGOS_ASSERT_EQ(status(d, "m1"), std::string("ok"));
+    LOGOS_ASSERT_TRUE(d.view("m1")->stale);
+    LOGOS_ASSERT_TRUE(fake.calls.empty());
+    LOGOS_ASSERT_TRUE(fake.fire("m1"));      // the loss's own refresh
+    fake.complete("m1", "getPluginInterface", ok(kIface));
+    LOGOS_ASSERT_EQ(status(d, "m1"), std::string("untyped"));
+    LOGOS_ASSERT_TRUE(fake.changed.empty());   // the loss already ended the subscriptions
+    LOGOS_ASSERT_TRUE(fake.fire(kTimer));    // and revalidation resumes
+    LOGOS_ASSERT_EQ(fake.pending("m1", "getPluginInterface"), static_cast<size_t>(1));
+}
+
+// Only the module whose report changed has its subscriptions ended.
+LOGOS_TEST(a_changed_live_report_ends_that_modules_subscriptions_only) {
+    const BridgeConfig cfg =
+        config(R"({"expose":{"modules":["m1","m2"]},"discovery":{"revalidate_ms":2000}})");
+    FakeIo fake;
+    Discovery d(&cfg, fake.io());
+    d.start();
+    discoverTyped(fake, text(kContract));
+    fake.complete("m2", "getPluginInterface", ok(kIface));
+    LOGOS_ASSERT_EQ(status(d, "m2"), std::string("untyped"));
+    const auto m2Before = d.view("m2");
+    LOGOS_ASSERT_TRUE(fake.fire(kTimer));
+    fake.complete("m2", "getPluginInterface", ok(kIface));   // unchanged
+    fake.complete("m1", "getPluginInterface", ok(kIface));   // m1 lost its lidl()
+    LOGOS_ASSERT_EQ(fake.changed.size(), static_cast<size_t>(1));
+    LOGOS_ASSERT_EQ(fake.changed[0], std::string("m1"));
+    LOGOS_ASSERT_EQ(status(d, "m1"), std::string("untyped"));
+    LOGOS_ASSERT_TRUE(d.view("m2") == m2Before);
+    // A later round with nothing new ends nothing more.
+    LOGOS_ASSERT_TRUE(fake.fire(kTimer));
+    fake.complete("m1", "getPluginInterface", ok(kIface));
+    fake.complete("m2", "getPluginInterface", ok(kIface));
+    LOGOS_ASSERT_EQ(fake.changed.size(), static_cast<size_t>(1));
 }

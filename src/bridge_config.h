@@ -9,6 +9,8 @@
 // standing up a server or a module host.
 
 #include <cctype>
+#include <cstdint>
+#include <limits>
 #include <set>
 #include <string>
 #include <vector>
@@ -82,6 +84,12 @@ struct Limits {
     int callTimeoutMs = 30000;
 };
 
+// How often discovery re-reads each module's live report (0 = never), so a
+// reload too fast for the subscription watcher is still noticed.
+struct DiscoverySettings {
+    int revalidateMs = 10000;
+};
+
 enum class AuthMode { None, Bearer };
 
 struct BridgeConfig {
@@ -94,6 +102,7 @@ struct BridgeConfig {
     AuthMode authMode = AuthMode::None;
     std::vector<ExposedModule> modules;
     Limits limits;
+    DiscoverySettings discovery;
 
     const ExposedModule* find(const std::string& moduleName) const {
         for (const auto& m : modules)
@@ -345,6 +354,24 @@ inline ConfigParseResult parseBridgeConfig(const std::string& configJson,
                 r.error = std::string("limits.") + p.name + " must be positive";
                 return r;
             }
+        }
+    }
+
+    // ---- discovery --------------------------------------------------------
+    if (j.contains("discovery")) {
+        const auto& d = j["discovery"];
+        if (!d.is_object()) { r.error = "discovery must be an object"; return r; }
+        if (d.contains("revalidate_ms")) {
+            const auto& v = d["revalidate_ms"];
+            const bool fits = v.is_number_unsigned() &&
+                v.get<std::uint64_t>() <= static_cast<std::uint64_t>(std::numeric_limits<int>::max());
+            const int ms = fits ? static_cast<int>(v.get<std::uint64_t>()) : -1;
+            if (ms < 0 || (ms > 0 && ms < 1000)) {
+                r.error = "discovery.revalidate_ms must be 0 (off) or an integer of at least 1000 (got " +
+                          v.dump() + ")";
+                return r;
+            }
+            c.discovery.revalidateMs = ms;
         }
     }
 

@@ -60,6 +60,18 @@ inline nlohmann::json makeNotification(const char* method, nlohmann::json params
     return nlohmann::json{{"jsonrpc", "2.0"}, {"method", method}, {"params", std::move(params)}};
 }
 
+// Why a subscription was ended: rpc.subscription_terminated's `reason`.
+namespace reason {
+constexpr const char* kProviderUnavailable = "provider_unavailable";   // the provider went away
+constexpr const char* kProviderChanged     = "provider_changed";       // a different build replaced it
+} // namespace reason
+
+inline nlohmann::json terminationNotice(const nlohmann::json& subscription, const std::string& module,
+                                        const std::string& event, const char* why) {
+    return makeNotification(op::kTerminated, nlohmann::json{
+        {"subscription", subscription}, {"module", module}, {"event", event}, {"reason", why}});
+}
+
 // A notification is the `id` key being ABSENT (JSON-RPC 2.0 section 4).
 // `id: null` is a valid id and gets a response echoing null — the two are
 // distinct, and conflating them leaves a WebSocket client's request unanswered

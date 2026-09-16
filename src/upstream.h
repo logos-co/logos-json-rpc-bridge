@@ -37,6 +37,8 @@
 
 #include <logos_lp_client.h>
 
+#include "rpc_dispatcher.h"   // termination reasons
+
 namespace bridge {
 
 // ---------------------------------------------------------------------------
@@ -168,12 +170,13 @@ class SubscriptionHub {
 public:
     // sink: called for each subscriber on each event. Runs on the upstream
     // delivery thread, so it must only enqueue.
-    // onLost: called when an upstream subscription's provider went away, once
-    // per affected subscriber.
+    // onLost: called once per affected subscriber when a module's subscriptions
+    // end (the provider went away, or was replaced), with the reason.
     using Sink   = std::function<void(const Delivery&)>;
     using OnLost = std::function<void(std::uint64_t subscriberId,
                                       const std::string& module,
-                                      const std::string& event)>;
+                                      const std::string& event,
+                                      const char* why)>;
     using OnModuleStatus = std::function<void(const std::string& module,
                                               logos::SubStatus state,
                                               std::uint64_t generation)>;
@@ -307,27 +310,26 @@ public:
                 // a silent fall-through would resume a stream with a hole.
                 if (state == logos::SubStatus::Lost || state == logos::SubStatus::Held ||
                     state == logos::SubStatus::Abandoned)
-                    notifyModuleLost(module);
+                    notifyModuleLost(module, reason::kProviderUnavailable);
                 if (m_statusHook) m_statusHook(module, state, generation);
             });
     }
 
-    // The provider for `module` went away, which takes every subscription to it
-    // down at once. Terminate each affected event's subscribers.
-    void notifyModuleLost(const std::string& module) {
+    // The provider for `module` went away or was replaced, which ends every
+    // subscription to it at once. Terminate each affected event's subscribers.
+    void notifyModuleLost(const std::string& module, const char* why) {
         std::vector<std::string> events;
         {
             std::lock_guard<std::mutex> lock(m_subMu);
             for (const auto& kv : m_up)
                 if (kv.second->module == module) events.push_back(kv.second->event);
         }
-        for (const std::string& ev : events) notifyLost(module, ev);
+        for (const std::string& ev : events) notifyLost(module, ev, why);
     }
 
-    // Called when the upstream reports the provider went away. Signals every
-    // affected subscriber; the transport turns each into a
-    // rpc.subscription_terminated and forgets the subscription.
-    void notifyLost(const std::string& module, const std::string& event) {
+    // Signals every subscriber of (module, event); the transport turns each into
+    // rpc.subscription_terminated. The upstream stays armed for re-subscribes.
+    void notifyLost(const std::string& module, const std::string& event, const char* why) {
         std::shared_ptr<const Subscribers> subs;
         std::string mod, ev;
         {
@@ -342,7 +344,7 @@ public:
             std::atomic_store(&it->second->subscribers, it->second->subscribers);
         }
         if (!subs) return;
-        for (std::uint64_t id : subs->ids) m_onLost(id, mod, ev);   // no lock held
+        for (std::uint64_t id : subs->ids) m_onLost(id, mod, ev, why);   // no lock held
     }
 
     std::size_t upstreamCount() const {

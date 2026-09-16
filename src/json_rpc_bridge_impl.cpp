@@ -67,9 +67,8 @@ public:
           m_discovery(&m_cfg, discoveryIo()),
           m_hub(&m_clients,
                 [this](const Delivery& d) { onEvent(d); },
-                [this](std::uint64_t id, const std::string& m, const std::string& e) {
-                    onSubscriptionLost(id, m, e);
-                }) {
+                [this](std::uint64_t id, const std::string& m, const std::string& e,
+                       const char* why) { onSubscriptionLost(id, m, e, why); }) {
         m_hub.setModuleStatusHook(
             [this](const std::string& m, logos::SubStatus s, std::uint64_t generation) {
                 if (s == logos::SubStatus::Armed) m_discovery.onProviderArmed(m, generation);
@@ -91,7 +90,7 @@ private:
                       const std::shared_ptr<class Batch>& batch, std::size_t slot);
     void onEvent(const Delivery& d);
     void onSubscriptionLost(std::uint64_t subscriberId, const std::string& module,
-                            const std::string& event);
+                            const std::string& event, const char* why);
     void abandonSubscribe(const std::shared_ptr<Conn>& conn, const std::string& key,
                           std::uint64_t sid);
     std::string onGet(const std::string& path, int* status);
@@ -204,6 +203,9 @@ DiscoveryIo BridgeCore::discoveryIo() {
                          DiscoveryIo::Job job) {
         return m_scheduler.schedule(key, delay, std::move(job));
     };
+    io.providerChanged = [this](const std::string& module) {
+        m_hub.notifyModuleLost(module, reason::kProviderChanged);
+    };
     return io;
 }
 
@@ -280,7 +282,7 @@ void BridgeCore::onEvent(const Delivery& d) {
 }
 
 void BridgeCore::onSubscriptionLost(std::uint64_t subscriberId, const std::string& module,
-                                    const std::string& event) {
+                                    const std::string& event, const char* why) {
     std::shared_ptr<Conn> conn;
     nlohmann::json clientId;
     {
@@ -301,12 +303,7 @@ void BridgeCore::onSubscriptionLost(std::uint64_t subscriberId, const std::strin
     // Terminate rather than silently resume: a re-established upstream
     // subscription is a NEW one, and the events in between are unrecoverable.
     // The client decides whether to re-subscribe and refetch state.
-    m_server->send(conn, makeNotification(op::kTerminated, nlohmann::json{
-        {"subscription", clientId},
-        {"module", module},
-        {"event", event},
-        {"reason", "provider_unavailable"},
-    }).dump());
+    m_server->send(conn, terminationNotice(clientId, module, event, why).dump());
 }
 
 // Undo a subscribe that never reached the hub. The two locks are taken in turn, never nested.
@@ -596,6 +593,7 @@ nlohmann::json BridgeCore::info() const {
         {"protocol_version", LOGOS_PROTOCOL_VERSION_STRING},
         {"subscription_continuity", kHasSubscriptionContinuity},
         {"lidl_reader", lidlReaderVersion()},
+        {"discovery", {{"revalidate_ms", m_cfg.discovery.revalidateMs}}},
     };
 }
 

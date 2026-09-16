@@ -46,6 +46,7 @@ struct LiveReport {
     // False when no entry was tagged "type":"event". Legacy Qt plugins never
     // tag events, so this means "cannot know", not "has none".
     bool eventsDeclared = false;
+    std::string sha256;                // of the whole answer; see liveReportDigest()
     std::vector<LiveMember> methods;   // host order; Qt default-argument clones repeat a name
     std::vector<LiveMember> events;
 
@@ -62,10 +63,17 @@ struct LiveReport {
     }
 };
 
+// The whole answer, type spellings included, so a rebuild that keeps every
+// name but changes a type still reads as a change. Never throws.
+inline std::string liveReportDigest(const nlohmann::json& iface) {
+    return sha256Hex(iface.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+}
+
 // False when `iface` is not an array. Entries without a string name are skipped.
 inline bool parseLiveReport(const nlohmann::json& iface, LiveReport* out) {
     if (!iface.is_array()) return false;
     LiveReport r;
+    r.sha256 = liveReportDigest(iface);
     for (const auto& entry : iface) {
         if (!entry.is_object()) continue;
         const auto name = entry.find("name");
@@ -493,6 +501,27 @@ inline Exposure exposureOf(const ExposedModule& em, const ModuleView& view) {
 inline ModuleView withExposure(const ExposedModule& em, ModuleView view) {
     view.exposure = exposureOf(em, view);
     return view;
+}
+
+// ---------------------------------------------------------------------------
+// Revalidation: a periodic re-read of each settled module's live report
+// ---------------------------------------------------------------------------
+
+enum class Revalidation { Keep, Refresh, MarkStale };
+
+// Refresh when the report changed, go stale when the module is unreachable,
+// and leave the view alone otherwise (including an inconclusive failure).
+inline Revalidation revalidation(const ModuleView& view, bool callOk,
+                                 const std::string& errorCode, const nlohmann::json& value) {
+    if (!view.resolved()) return Revalidation::Keep;
+    if (!callOk) {
+        const bool unreachable = errorCode == "object_unavailable" || errorCode == "timeout" ||
+                                 errorCode == "transport_error";
+        return unreachable ? Revalidation::MarkStale : Revalidation::Keep;
+    }
+    if (!value.is_array()) return Revalidation::MarkStale;
+    return liveReportDigest(value) == view.live.sha256 ? Revalidation::Keep
+                                                        : Revalidation::Refresh;
 }
 
 // ---------------------------------------------------------------------------

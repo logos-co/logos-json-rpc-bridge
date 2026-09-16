@@ -1,7 +1,7 @@
 #pragma once
 
 // Discovery IO: getPluginInterface, then lidl() and version() when listed, with
-// retry and rediscovery. Decisions live in discovery_model.h.
+// retry, rediscovery and periodic revalidation. Decisions live in discovery_model.h.
 
 #include <chrono>
 #include <cstdint>
@@ -37,11 +37,15 @@ struct DiscoveryIo {
     std::function<bool(Job)> post;
     // Run `job` after `delay`, replacing any timer already set for `key`.
     std::function<bool(const std::string& key, std::chrono::milliseconds delay, Job job)> schedule;
+    // A different build now answers for `module`: end its client subscriptions.
+    std::function<void(const std::string& module)> providerChanged;
 };
 
 class Discovery {
 public:
     static constexpr int kCallTimeoutMs = 5000;
+    // The revalidation timer's key; module names cannot contain a space.
+    static constexpr const char* kRevalidateTimer = "revalidate modules";
 
     Discovery(const BridgeConfig* config, DiscoveryIo io)
         : m_config(config), m_io(std::move(io)) {
@@ -55,6 +59,30 @@ public:
         for (const auto& em : m_config->modules) {
             const std::string name = em.name;
             m_io.post([this, name] { refresh(name); });
+        }
+        scheduleRevalidation();
+    }
+
+    // One revalidation round: re-read the live report of every settled module.
+    // The subscription watcher misses a reload faster than its poll; this does not.
+    void revalidate() {
+        for (const auto& em : m_config->modules) {
+            const std::string module = em.name;
+            std::uint64_t attempt = 0;
+            {
+                std::lock_guard<std::mutex> lock(m_mu);
+                Slot* s = slot(module);
+                if (!s || s->inFlight || s->retryArmed || s->checking || !s->view->resolved())
+                    continue;
+                s->checking = true;
+                attempt = s->attempt;
+            }
+            m_io.invoke(module, "getPluginInterface", kCallTimeoutMs,
+                [this, module, attempt](CallOutcome r) {
+                    m_io.post([this, module, attempt, r = std::move(r)]() mutable {
+                        onRevalidated(module, attempt, std::move(r));
+                    });
+                });
         }
     }
 
@@ -166,6 +194,7 @@ private:
         std::uint64_t attempt = 0;          // bumps per refresh; older completions are dropped
         bool inFlight = false;
         bool retryArmed = false;
+        bool checking = false;              // a revalidation read is outstanding
         int failures = 0;                   // consecutive attempts without a live report
         std::uint64_t armedGeneration = 0;  // highest subscription generation seen
     };
@@ -270,6 +299,46 @@ private:
             delay = retryDelay(s->failures);
         }
         if (retry) scheduleRefresh(module, delay);
+    }
+
+    // A refresh that started meanwhile wins; the read is then stale news.
+    void onRevalidated(const std::string& module, std::uint64_t attempt, CallOutcome r) {
+        std::shared_ptr<const ModuleView> seen;
+        {
+            std::lock_guard<std::mutex> lock(m_mu);
+            Slot* s = slot(module);
+            if (!s) return;
+            s->checking = false;
+            if (s->attempt != attempt || s->inFlight || s->retryArmed) return;
+            seen = s->view;
+        }
+        switch (revalidation(*seen, r.ok(), r.error, r.value)) {
+            case Revalidation::Keep: return;
+            case Revalidation::MarkStale: onCallUnavailable(module); return;
+            case Revalidation::Refresh: break;
+        }
+        // Changed: stale now, then the full refresh on the report already in hand.
+        std::uint64_t next = 0;
+        {
+            std::lock_guard<std::mutex> lock(m_mu);
+            Slot* s = slot(module);
+            if (!s || s->attempt != attempt || s->inFlight || s->retryArmed) return;
+            next = ++s->attempt;
+            s->inFlight = true;
+            s->view = std::make_shared<const ModuleView>(staleView(*s->view));
+        }
+        onInterface(module, next, std::move(r));
+        // Its subscribers must re-subscribe; the protocol may never report this swap.
+        if (m_io.providerChanged) m_io.providerChanged(module);
+    }
+
+    void scheduleRevalidation() {
+        const int ms = m_config->discovery.revalidateMs;
+        if (ms <= 0) return;
+        m_io.schedule(kRevalidateTimer, std::chrono::milliseconds(ms), [this] {
+            scheduleRevalidation();
+            m_io.post([this] { revalidate(); });
+        });
     }
 
     void scheduleRefresh(const std::string& module, std::chrono::milliseconds delay) {
