@@ -21,12 +21,14 @@ logos_test(
         test_digest.cpp
         test_discovery_io.cpp
         test_discovery_model.cpp
+        test_docs.cpp
         test_error_map.cpp
         test_exposure.cpp
         test_lidl_contract.cpp
         test_peer_slots.cpp
         test_retry_scheduler.cpp
         test_rpc_dispatcher.cpp
+        test_schema_ir.cpp
         test_subscription_table.cpp
         test_termination.cpp
     EXTRA_INCLUDES
