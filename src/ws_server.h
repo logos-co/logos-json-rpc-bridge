@@ -28,6 +28,8 @@
 #include <libwebsockets.h>
 
 #include "bridge_config.h"
+#include "peer_slots.h"
+#include "subscription_table.h"
 
 namespace bridge {
 
@@ -50,9 +52,9 @@ struct Conn {
     std::atomic<CloseReason> wantClose{CloseReason::None};
     std::atomic<int> inFlight{0};
 
-    // Subscriptions this connection holds: client-assigned id -> (module,event).
+    // Subscriptions this connection holds: client-assigned id -> (module, event, owner).
     std::mutex subMu;
-    std::map<std::string, std::pair<std::string, std::string>> subs;
+    SubscriptionTable subs;
 
     std::string httpBody;                // accumulating POST body
     std::string httpRoute;               // path, captured at header time
@@ -132,7 +134,7 @@ private:
 
     mutable std::mutex m_connMu;
     std::map<struct lws*, std::shared_ptr<Conn>> m_conns;
-    std::map<std::string, int> m_perPeer;
+    PeerSlots m_peerSlots;               // one slot per wsi, not per HTTP request
     std::atomic<std::uint64_t> m_nextConnId{1};
 
     // Connections with something to write or a pending close, so the service

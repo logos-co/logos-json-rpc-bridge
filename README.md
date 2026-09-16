@@ -166,7 +166,9 @@ notification.
 
 **Subscription ids are assigned by the client**, per the transport spec, so a
 client can correlate without waiting for the ack. Re-subscribing the same id is
-idempotent and never double-delivers.
+idempotent and never double-delivers. A subscribe that fails, or a subscription
+that is terminated, frees its id, so retrying with the same id subscribes
+afresh.
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"rpc.subscribe",
@@ -264,9 +266,11 @@ effect.
   persistence directory — never from config, which gets logged and pasted into
   issues. Compared in constant time against a stored digest.
 - Bounded connections (total and per peer), in-flight calls, subscriptions,
-  body and frame sizes. A slow WebSocket reader is **closed**, not silently
-  starved of events: one upstream subscription feeds many clients, so the
-  producer cannot be back-pressured and dropping events would be a silent gap.
+  body and frame sizes. A connection counts once against the per-peer bound,
+  however many HTTP requests it carries, and every loopback client is the same
+  peer. A slow WebSocket reader is **closed**, not silently starved of events:
+  one upstream subscription feeds many clients, so the producer cannot be
+  back-pressured and dropping events would be a silent gap.
 
 ## Discovery
 
