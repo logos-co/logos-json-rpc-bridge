@@ -1,0 +1,11 @@
+{
+  "expose": {
+    "modules": [
+      {
+        "name": "test_fullapi_ext_cpp",
+        "methods": { "deny": ["echoWrapper"] },
+        "events": { "deny": ["blobEvent"] }
+      }
+    ]
+  }
+}

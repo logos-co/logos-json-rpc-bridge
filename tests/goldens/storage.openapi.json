@@ -1,0 +1,3631 @@
+{
+  "components": {
+    "requestBodies": {
+      "NoParams": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "description": "No parameters: an empty object or an empty array.",
+              "oneOf": [
+                {
+                  "maxProperties": 0,
+                  "type": "object"
+                },
+                {
+                  "maxItems": 0,
+                  "type": "array"
+                }
+              ],
+              "title": "NoParams"
+            }
+          }
+        },
+        "description": "No parameters: send no body, {} or [].",
+        "required": false
+      },
+      "UntypedParams": {
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        },
+        "description": "Untyped: the parameters by name (an object) or by position (an array).",
+        "required": false
+      }
+    },
+    "responses": {
+      "Forbidden": {
+        "content": {
+          "text/html": {
+            "schema": {
+              "type": "string"
+            }
+          }
+        },
+        "description": "Refused before routing: the Host header is not a loopback literal this bridge bound, or the Origin is not in http.allowed_origins."
+      },
+      "LengthRequired": {
+        "content": {
+          "text/html": {
+            "schema": {
+              "type": "string"
+            }
+          }
+        },
+        "description": "The request states no valid Content-Length, or has a Transfer-Encoding: the bridge reads no chunked body. The connection is closed."
+      },
+      "Unauthorized": {
+        "content": {
+          "text/html": {
+            "schema": {
+              "type": "string"
+            }
+          }
+        },
+        "description": "auth.mode is bearer and the request carries no valid `Authorization: Bearer` token."
+      },
+      "UnsupportedMediaType": {
+        "content": {
+          "text/html": {
+            "schema": {
+              "type": "string"
+            }
+          }
+        },
+        "description": "The Content-Type is not application/json, which is required even for an empty body."
+      },
+      "UntypedCallResult": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "result": {}
+                  },
+                  "required": [
+                    "result"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "$ref": "#/components/schemas/ErrorBody"
+                },
+                {
+                  "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                }
+              ]
+            }
+          }
+        },
+        "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+      }
+    },
+    "schemas": {
+      "Bytes": {
+        "additionalProperties": false,
+        "description": "A LIDL bstr: the bytes as base64url without padding (RFC 4648 section 5), carried as the object's only key. Do not name a map key \"_bytes\".",
+        "properties": {
+          "_bytes": {
+            "pattern": "^[A-Za-z0-9_-]*$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "_bytes"
+        ],
+        "title": "Bytes",
+        "type": "object"
+      },
+      "ErrorBody": {
+        "additionalProperties": false,
+        "description": "A module route's refusal: the JSON-RPC error alone. Denied, unexposed and unknown targets all get the same -32601.",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/JsonRpcError"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "ErrorBody",
+        "type": "object"
+      },
+      "JsonRpcError": {
+        "description": "A JSON-RPC 2.0 error object, with the Logos error taxonomy in data.",
+        "properties": {
+          "code": {
+            "type": "integer"
+          },
+          "data": {
+            "properties": {
+              "invalid_params_detail": {
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "description": "schema-mismatch, malformed-cbor or non-deterministic-cbor.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reason"
+                ],
+                "type": "object"
+              },
+              "logos_error_code": {
+                "type": "integer"
+              },
+              "logos_error_name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "logos_error_code",
+              "logos_error_name"
+            ],
+            "type": "object"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "JsonRpcError",
+        "type": "object"
+      },
+      "JsonRpcErrorResponse": {
+        "additionalProperties": false,
+        "description": "A complete JSON-RPC 2.0 error response.",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/JsonRpcError"
+          },
+          "id": {
+            "$ref": "#/components/schemas/JsonRpcId"
+          },
+          "jsonrpc": {
+            "const": "2.0"
+          }
+        },
+        "required": [
+          "jsonrpc",
+          "id",
+          "error"
+        ],
+        "title": "JsonRpcErrorResponse",
+        "type": "object"
+      },
+      "JsonRpcId": {
+        "description": "A JSON-RPC request id; a reply echoes it.",
+        "title": "JsonRpcId",
+        "type": [
+          "string",
+          "number",
+          "null"
+        ]
+      },
+      "LogosResult": {
+        "description": "A LIDL result. A provider that ran and failed answers success=false here: an application failure is a successful call, never a JSON-RPC error.",
+        "properties": {
+          "error": {
+            "description": "The failure message as a string; null when there is none."
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "value": {
+            "description": "The payload; any JSON value, null when absent."
+          }
+        },
+        "required": [
+          "success"
+        ],
+        "title": "LogosResult",
+        "type": "object"
+      },
+      "ProviderRejection": {
+        "additionalProperties": false,
+        "description": "The provider refused the call and said why. It arrives as the call's result, not as a JSON-RPC error.",
+        "properties": {
+          "code": {
+            "description": "Known codes: dispatch_failed (the argument values were refused), invalid_args (wrong argument count), unknown_method (reserved; not emitted yet). Treat any other code as a refusal too.",
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "origin": {
+            "description": "The module that refused.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "origin"
+        ],
+        "title": "ProviderRejection",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "The HTTP surface of the Logos JSON-RPC bridge. `POST /modules/<module>/<method>` calls an exposed module method with its parameters as the body, typed from the module's canonical LIDL contract when it has one (x-logos-untyped marks names-only modules). `POST /rpc` speaks JSON-RPC 2.0 (see rpc.discover). Every route checks Host and Origin and sends no CORS headers. A refusal (401, 403, 411, 415) leaves the request body unread, so when the request declares a body the connection closes after the refusal. Operations cover what this bridge lets you call; component schemas cover every record in each contract, and x-logos-modules gives each module's status, digests and exposure.",
+    "title": "Logos JSON-RPC bridge",
+    "version": "0.1.0"
+  },
+  "jsonSchemaDialect": "https://spec.openapis.org/oas/3.1/dialect/base",
+  "openapi": "3.1.1",
+  "paths": {
+    "/asyncapi.json": {
+      "get": {
+        "description": "The AsyncAPI 3.0.0 description of this bridge's WebSocket endpoint.",
+        "operationId": "getAsyncApi",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The AsyncAPI document."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        },
+        "summary": "The WebSocket description.",
+        "tags": [
+          "bridge"
+        ],
+        "x-logos-bridge-op": true
+      }
+    },
+    "/healthz": {
+      "get": {
+        "description": "Liveness and draining state. Gated like every other route.",
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "protocol": {
+                      "const": "json-rpc-2.0"
+                    },
+                    "status": {
+                      "enum": [
+                        "ok",
+                        "draining"
+                      ],
+                      "type": "string"
+                    },
+                    "uptime_seconds": {
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "uptime_seconds",
+                    "protocol"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The bridge is serving."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        },
+        "summary": "Bridge health.",
+        "tags": [
+          "bridge"
+        ],
+        "x-logos-bridge-op": true
+      }
+    },
+    "/modules": {
+      "get": {
+        "description": "The rpc.list_modules views, in configuration order, without `interface`.",
+        "operationId": "listModules",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "description": "The bridge's view of one module, without `interface`.",
+                    "properties": {
+                      "authoritative": {
+                        "type": "boolean"
+                      },
+                      "contract_sha256": {
+                        "pattern": "^[0-9a-f]{64}$",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "cross_check": {
+                        "type": [
+                          "object",
+                          "null"
+                        ]
+                      },
+                      "exposure": {
+                        "properties": {
+                          "events": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "methods": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "interface_error": {
+                        "type": "string"
+                      },
+                      "interface_sha256": {
+                        "pattern": "^[0-9a-f]{64}$",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "interface_status": {
+                        "enum": [
+                          "pending",
+                          "ok",
+                          "untyped",
+                          "invalid"
+                        ],
+                        "type": "string"
+                      },
+                      "module": {
+                        "type": "string"
+                      },
+                      "source": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "module"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "The module views."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        },
+        "summary": "Describe every exposed module.",
+        "tags": [
+          "bridge"
+        ],
+        "x-logos-bridge-op": true
+      }
+    },
+    "/modules/storage_module/collectMetrics": {
+      "post": {
+        "description": "Collect node metrics for the openmetrics module.\n\nImplements the openmetrics-module IMetricsSource interface. Returns a\nLogos openmetrics-compatible JSON object. On libstorage errors or invalid\npayloads, returns: { \"metrics\": [] }.\n```json\n{\n\"metrics\": [\n{\n\"name\": string,\n\"type\": string,\n\"help\": string,\n\"value\": number,\n\"labels\": object\n}\n]\n}\n```\n\nThe method is synchronous.",
+        "operationId": "storage_module.collectMetrics",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/NoParams"
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": {},
+                              "type": "object"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Collect node metrics for the openmetrics module.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "collectMetrics",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/connect": {
+      "post": {
+        "description": "Connect to a peer.\n\nUses `peerAddresses` as explicit dial targets when provided; otherwise\nthe peer must be discoverable via the DHT using `peerId`.\n\nReturns a StdLogosResult indicating whether the connect command was sent;\nactual completion is signalled via the `storageConnect` event.\n\nThe method is asynchronous.",
+        "operationId": "storage_module.connect",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "peerAddresses": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "peerId": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "peerId",
+                      "peerAddresses"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 2,
+                    "minItems": 2,
+                    "prefixItems": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/LogosResult"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Connect to a peer.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "connect",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/dataDir": {
+      "post": {
+        "description": "Get the storage data directory path.\n\nReturns StdLogosResult::value as a std::string on success.\nThe method is synchronous.",
+        "operationId": "storage_module.dataDir",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/NoParams"
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/LogosResult"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Get the storage data directory path.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "dataDir",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/debug": {
+      "post": {
+        "description": "Get debug information for the node.\n\nReturns StdLogosResult::value as a JSON object on success:\n```json\n{\n\"id\": string,\n\"addrs\": [string],\n\"spr\": string,\n\"table\": {\n\"localNode\": { \"peerId\": string, \"addresses\": [string],\n\"lastSeen\": null },\n\"nodes\": [{ \"peerId\": string, \"addresses\": [string],\n\"lastSeen\": int }]\n}\n}\n```\n\nThe method is synchronous.",
+        "operationId": "storage_module.debug",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/NoParams"
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/LogosResult"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Get debug information for the node.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "debug",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/downloadCancel": {
+      "post": {
+        "description": "Cancel an ongoing download session.\n\nReturns StdLogosResult::success = true on success.\nThe method is synchronous.",
+        "operationId": "storage_module.downloadCancel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "sessionId": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "sessionId"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "prefixItems": [
+                      {
+                        "type": "string"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/LogosResult"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Cancel an ongoing download session.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "downloadCancel",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/downloadChunks": {
+      "post": {
+        "description": "Download content by CID and deliver it as a stream of base64-encoded chunks.\n\nUse this when you want to process or forward the data without writing it\nto disk.  For large files, downloadToUrl() is more efficient as it avoids\nthe base64 encoding overhead.\n\n`cid`       – content identifier to download.\n`local`     – if true, only reads from locally cached data (no network).\n`chunkSize` – download chunk size in bytes (default 65536).\n\nReturns StdLogosResult::value as the session ID (= CID) on success.\n\nThe method is asynchronous; each chunk is delivered via the\n`storageDownloadProgress` event (one event per chunk, not throttled) and\ncompletion via the `storageDownloadDone` event.",
+        "operationId": "storage_module.downloadChunks",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "chunkSize": {
+                        "format": "int64",
+                        "maximum": 9223372036854775807,
+                        "minimum": -9223372036854775808,
+                        "type": "integer"
+                      },
+                      "cid": {
+                        "type": "string"
+                      },
+                      "local": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "cid",
+                      "local",
+                      "chunkSize"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 3,
+                    "minItems": 3,
+                    "prefixItems": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "format": "int64",
+                        "maximum": 9223372036854775807,
+                        "minimum": -9223372036854775808,
+                        "type": "integer"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/LogosResult"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Download content by CID and deliver it as a stream of base64-encoded chunks.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "downloadChunks",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/downloadManifest": {
+      "post": {
+        "description": "Fetch the manifest for a given CID in the background.\n\nThe lookup may query the DHT and can take a long time, so this method\ndoes not block: the returned StdLogosResult only reports whether the\ncommand was dispatched. The real outcome arrives later via the\n`storageDownloadManifestDone` event.",
+        "operationId": "storage_module.downloadManifest",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "cid": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "cid"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "prefixItems": [
+                      {
+                        "type": "string"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/LogosResult"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Fetch the manifest for a given CID in the background.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "downloadManifest",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/downloadToUrl": {
+      "post": {
+        "description": "Download content by CID and write it to a local file.\n\nInternally fetches the manifest first to obtain the total size (required\nfor progress throttling); returns an error if the manifest is unavailable.\n\n`cid`       – content identifier to download.\n`filePath`  – destination path on disk.\n`local`     – if true, only reads from locally cached data (no network).\n`chunkSize` – download chunk size in bytes (default 65536).\n\nReturns StdLogosResult::value as the session ID (= CID) on success.\n\nThe method is asynchronous; progress is signalled via the\n`storageDownloadProgress` event (throttled to at most one event per %\npoint) and completion via the `storageDownloadDone` event.",
+        "operationId": "storage_module.downloadToUrl",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "chunkSize": {
+                        "format": "int64",
+                        "maximum": 9223372036854775807,
+                        "minimum": -9223372036854775808,
+                        "type": "integer"
+                      },
+                      "cid": {
+                        "type": "string"
+                      },
+                      "filePath": {
+                        "type": "string"
+                      },
+                      "local": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "cid",
+                      "filePath",
+                      "local",
+                      "chunkSize"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 4,
+                    "minItems": 4,
+                    "prefixItems": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "format": "int64",
+                        "maximum": 9223372036854775807,
+                        "minimum": -9223372036854775808,
+                        "type": "integer"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/LogosResult"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Download content by CID and write it to a local file.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "downloadToUrl",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/exists": {
+      "post": {
+        "description": "Check whether content identified by CID exists in local storage.\n\nReturns StdLogosResult::value as bool (true = exists) on success.\nThe method is synchronous.",
+        "operationId": "storage_module.exists",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "cid": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "cid"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "prefixItems": [
+                      {
+                        "type": "string"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/LogosResult"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Check whether content identified by CID exists in local storage.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "exists",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/fetch": {
+      "post": {
+        "description": "Fetch content from the network and cache it locally in the background.\n\nThe method returns as soon as the fetch request is accepted; no event is\nemitted when the background download completes.\n\nReturns StdLogosResult::success = true if the request was accepted.\nThe method is synchronous.",
+        "operationId": "storage_module.fetch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "cid": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "cid"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "prefixItems": [
+                      {
+                        "type": "string"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/LogosResult"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Fetch content from the network and cache it locally in the background.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "fetch",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/importFiles": {
+      "post": {
+        "description": "Import all files from a directory (headless helper).\n\nIterates regular files in `path` and calls uploadUrl() for each.\nDoes not wait for uploads to complete; listen for `storageUploadDone`\nevents to track results.",
+        "operationId": "storage_module.importFiles",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "prefixItems": [
+                      {
+                        "type": "string"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "const": true
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Import all files from a directory (headless helper).",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "importFiles",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/init": {
+      "post": {
+        "description": "Create a new storage node instance and configure it.\n\n`cfg` is a JSON string with the configuration overwriting defaults.\n\nExample of JSON config:\n```json\n{\n\"log-level\": \"info\",\n\"log-format\": \"auto\",\n\"metrics\": false,\n\"metrics-address\": \"127.0.0.1\",\n\"metrics-port\": 8008,\n\"data-dir\": \".cache/storage\",\n\"listen-ip\": \"0.0.0.0\",\n\"listen-port\": 0,\n\"nat\": \"auto\",\n\"net-privkey\": \"key\",\n\"bootstrap-node\": [],\n\"no-bootstrap-node\": false,\n\"network\": \"logos.test\",\n\"dht-mix-proxy\": [],\n\"mix-enabled\": false,\n\"mix-pool\": \"\",\n\"mix-pool-json\": \"\",\n\"max-peers\": 160,\n\"num-threads\": 0,\n\"agent-string\": \"Logos Storage\",\n\"repo-kind\": \"fs\",\n\"storage-quota\": 21474836480,\n\"block-ttl\": \"30d\",\n\"block-mi\": \"10m\",\n\"block-mn\": 1000,\n\"block-retries\": 300,\n\"log-file\": \"/tmp/storage-log-624036264.log\",\n\"nat-schedule-interval\": \"2m\",\n\"nat-num-peers-to-ask\": 3,\n\"nat-max-queue-size\": 3,\n\"nat-min-confidence\": 0.6,\n\"nat-observed-addr-min-count\": 1,\n\"nat-max-relays\": 2,\n\"nat-port-mapping-discover-timeout\": 500,\n\"nat-port-mapping-timeout\": 500,\n\"nat-port-mapping-recheck-period\": 300000\n}\n```\n\nDo not call init() more than once per instance.\n\nReturns true on success.  The method is synchronous.",
+        "operationId": "storage_module.init",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "cfg": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "cfg"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "prefixItems": [
+                      {
+                        "type": "string"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "type": "boolean"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Create a new storage node instance and configure it.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "init",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/libstorageVersion": {
+      "post": {
+        "description": "Get the libstorage version string.\n\nNamed for what it returns: this is the version of the underlying\nlibstorage (Nim) library, NOT of this module. `version()` cannot be used\nfor it -- that name is reserved for module identity and must be\n`version() -> tstr`, which the generator injects from `metadata.json`.\n\nDoes not require the node to be started.\n\nReturns StdLogosResult::value as a std::string on success.\nThe method is synchronous.",
+        "operationId": "storage_module.libstorageVersion",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/NoParams"
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/LogosResult"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Get the libstorage version string.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "libstorageVersion",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/lidl": {
+      "post": {
+        "description": "The module's canonical LIDL interface document.\n\nReturns this module's full canonical LIDL contract: the exact `.lidl` text its build published, never filtered by this bridge's policy.\n\nBuilt-in: always callable for an exposed module, whatever this bridge's method policy.",
+        "operationId": "storage_module.lidl",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/NoParams"
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "The module's canonical LIDL interface document.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-derived": true,
+        "x-logos-method": "lidl",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/manifests": {
+      "post": {
+        "description": "List all manifests stored locally.\n\nReturns StdLogosResult::value as a JSON array on success; each item:\n```json\n{\n\"cid\":         string,\n\"treeCid\":     string,\n\"datasetSize\": number,\n\"blockSize\":   number,\n\"filename\":    string,\n\"mimetype\":    string\n}\n```\n\nThe method is synchronous.",
+        "operationId": "storage_module.manifests",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/NoParams"
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/LogosResult"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "List all manifests stored locally.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "manifests",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/migrateConfig": {
+      "post": {
+        "description": "Migrate the configuration after a Storage Module update.\n\nThis method takes a configuration string in parameters and returns\na new configuration JSON string updated.\n\nDepending on the updates of logos-storage-nim, some options can be removed\nor replaced with new ones. This method ensures a migration path for the\nconfiguration to the latest version of the module using a configuration version.\n\nIn addition to the migration, the data-dir is also set if it is not provided\nin configuration. And with `mix-enabled` true plus a network key, the mix\nconfiguration is updated.\n\nThis method should be called before `init()`. It is a separate step so\nthe caller can get the result of the new configuration and update it.\n\nReturns StdLogosResult::value as the JSON to hand to init().",
+        "operationId": "storage_module.migrateConfig",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "cfg": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "cfg"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "prefixItems": [
+                      {
+                        "type": "string"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/LogosResult"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Migrate the configuration after a Storage Module update.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "migrateConfig",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/moduleVersion": {
+      "post": {
+        "description": "Get this module's version, as declared in `metadata.json`.\n\nThe method is synchronous.",
+        "operationId": "storage_module.moduleVersion",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/NoParams"
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Get this module's version, as declared in `metadata.json`.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "moduleVersion",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/name": {
+      "post": {
+        "description": "The module's name, as declared in its metadata.\n\nBuilt-in: always callable for an exposed module, whatever this bridge's method policy.",
+        "operationId": "storage_module.name",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/NoParams"
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "The module's name, as declared in its metadata.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-derived": true,
+        "x-logos-method": "name",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/network": {
+      "post": {
+        "description": "Get the Logos network this node was configured for.\n\nReturns StdLogosResult::value as a std::string on success.\nThe method is synchronous.",
+        "operationId": "storage_module.network",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/NoParams"
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/LogosResult"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Get the Logos network this node was configured for.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "network",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/peerId": {
+      "post": {
+        "description": "Get the node's peer ID.\n\nThe peer ID is the libp2p peer identity as described at\nhttps://docs.libp2p.io/concepts/fundamentals/peers/\n\nReturns StdLogosResult::value as a std::string on success.\nThe method is synchronous.",
+        "operationId": "storage_module.peerId",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/NoParams"
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/LogosResult"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Get the node's peer ID.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "peerId",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/remove": {
+      "post": {
+        "description": "Remove content identified by CID from local storage in the background.\n\nThe delete may touch the network and can take a while, so this method\ndoes not block: the returned StdLogosResult only reports whether the\ncommand was dispatched. The real outcome arrives later via the\n`storageRemoveDone` event.",
+        "operationId": "storage_module.remove",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "cid": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "cid"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "prefixItems": [
+                      {
+                        "type": "string"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/LogosResult"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Remove content identified by CID from local storage in the background.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "remove",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/space": {
+      "post": {
+        "description": "Get storage space information.\n\nReturns StdLogosResult::value as a JSON object on success:\n```json\n{\n\"totalBlocks\":        number,\n\"quotaMaxBytes\":      number,\n\"quotaUsedBytes\":     number,\n\"quotaReservedBytes\": number\n}\n```\n\nThe method is synchronous.",
+        "operationId": "storage_module.space",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/NoParams"
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/LogosResult"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Get storage space information.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "space",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/spr": {
+      "post": {
+        "description": "Get the node's Signed Peer Record (SPR).\n\nReturns StdLogosResult::value as a std::string on success.\nThe method is synchronous.",
+        "operationId": "storage_module.spr",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/NoParams"
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/LogosResult"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Get the node's Signed Peer Record (SPR).",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "spr",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/start": {
+      "post": {
+        "description": "Start the storage node.\n\nReturns true if the start command was accepted by libstorage.  Actual\ncompletion is signalled asynchronously via the `storageStart` event.\n\nThe method is asynchronous.",
+        "operationId": "storage_module.start",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/NoParams"
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "type": "boolean"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Start the storage node.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "start",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/stop": {
+      "post": {
+        "description": "Stop the storage node.\n\nThe node can be started and stopped multiple times.  Returns a\nStdLogosResult indicating whether the stop command was sent; actual\ncompletion is signalled via the `storageStop` event.\n\nThe method is asynchronous.",
+        "operationId": "storage_module.stop",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/NoParams"
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/LogosResult"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Stop the storage node.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "stop",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/togglePrivateQueries": {
+      "post": {
+        "description": "Toggle routing of DHT queries over the Logos mix network.\n\nWhen enabled, all subsequent DHT queries are tunnelled over Mix; this\naffects queries only, not advertisements.\n\nEnabling requires Mix to be configured: `mix-enabled` true and at\nleast one `dht-mix-proxy` set (see init()). Otherwise enabling fails\nwith an error. Disabling is always allowed.\n\nThis is a temporary API and will likely be removed before mainnet.\n\nOn success, returns StdLogosResult::value as a bool: the previous toggle\nstate (true = private queries were already enabled).\nThe method is synchronous.",
+        "operationId": "storage_module.togglePrivateQueries",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "enabled"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "prefixItems": [
+                      {
+                        "type": "boolean"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/LogosResult"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Toggle routing of DHT queries over the Logos mix network.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "togglePrivateQueries",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/updateLogLevel": {
+      "post": {
+        "description": "Set the log level at runtime.\n\n`logLevel` must be one of: TRACE, DEBUG, INFO, NOTICE, WARN, ERROR, FATAL\n\nReturns StdLogosResult::success = true on success.\nThe method is synchronous.",
+        "operationId": "storage_module.updateLogLevel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "logLevel": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "logLevel"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "prefixItems": [
+                      {
+                        "type": "string"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/LogosResult"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Set the log level at runtime.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "updateLogLevel",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/uploadCancel": {
+      "post": {
+        "description": "Cancel an ongoing upload session.\n\nReturns StdLogosResult::success = true on success.\nThe method is synchronous.",
+        "operationId": "storage_module.uploadCancel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "sessionId": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "sessionId"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "prefixItems": [
+                      {
+                        "type": "string"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/LogosResult"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Cancel an ongoing upload session.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "uploadCancel",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/uploadChunk": {
+      "post": {
+        "description": "Upload a single data chunk for a session created with uploadInit().\n\nA failed chunk does not corrupt the session; the caller may retry or\ncall uploadCancel().\n\nEmits the `storageUploadProgress` event on completion.\n\nThe method is asynchronous.",
+        "operationId": "storage_module.uploadChunk",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "chunk": {
+                        "type": "string"
+                      },
+                      "sessionId": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "sessionId",
+                      "chunk"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 2,
+                    "minItems": 2,
+                    "prefixItems": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/LogosResult"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Upload a single data chunk for a session created with uploadInit().",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "uploadChunk",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/uploadFinalize": {
+      "post": {
+        "description": "Finalize a manual upload session and retrieve the CID.\n\nMust be called after all chunks have been sent with uploadChunk().\n\nReturns StdLogosResult::value as the CID string on success.\nThe method is synchronous.",
+        "operationId": "storage_module.uploadFinalize",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "sessionId": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "sessionId"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "prefixItems": [
+                      {
+                        "type": "string"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/LogosResult"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Finalize a manual upload session and retrieve the CID.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "uploadFinalize",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/uploadInit": {
+      "post": {
+        "description": "Create a manual upload session for chunk-by-chunk streaming.\n\nUse this only when uploadUrl() cannot be used (e.g. you are streaming\ndata that is not on disk).  After creating a session, send all chunks\nwith uploadChunk(), then call uploadFinalize() to get the CID.\n\n`filename`  – used to populate manifest metadata (mimetype, name).\n`chunkSize` – upload chunk size in bytes (default 65536).\n\nReturns StdLogosResult::value as the session ID string on success.\nThe method is synchronous.",
+        "operationId": "storage_module.uploadInit",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "chunkSize": {
+                        "format": "int64",
+                        "maximum": 9223372036854775807,
+                        "minimum": -9223372036854775808,
+                        "type": "integer"
+                      },
+                      "filename": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "filename",
+                      "chunkSize"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 2,
+                    "minItems": 2,
+                    "prefixItems": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "format": "int64",
+                        "maximum": 9223372036854775807,
+                        "minimum": -9223372036854775808,
+                        "type": "integer"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/LogosResult"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Create a manual upload session for chunk-by-chunk streaming.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "uploadInit",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/uploadUrl": {
+      "post": {
+        "description": "Upload a local file by absolute path.\n\nInternally calls storage_upload_init followed by storage_upload_file.\nIf init succeeds but the file upload command fails, the session is\ncancelled automatically.\n\n`filePath`  – absolute path to the file on disk.\n`chunkSize` – upload chunk size in bytes (default 65536).\n\nReturns StdLogosResult::value as a session ID string on success.\n\nThe method is asynchronous; progress is signalled via the\n`storageUploadProgress` event (throttled to at most one event per %\npoint) and completion via the `storageUploadDone` event.",
+        "operationId": "storage_module.uploadUrl",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "chunkSize": {
+                        "format": "int64",
+                        "maximum": 9223372036854775807,
+                        "minimum": -9223372036854775808,
+                        "type": "integer"
+                      },
+                      "filePath": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "filePath",
+                      "chunkSize"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 2,
+                    "minItems": 2,
+                    "prefixItems": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "format": "int64",
+                        "maximum": 9223372036854775807,
+                        "minimum": -9223372036854775808,
+                        "type": "integer"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/LogosResult"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "Upload a local file by absolute path.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-method": "uploadUrl",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/storage_module/version": {
+      "post": {
+        "description": "The module's version, as declared in its metadata.\n\nBuilt-in: always callable for an exposed module, whatever this bridge's method policy.",
+        "operationId": "storage_module.version",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/NoParams"
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "The module's version, as declared in its metadata.",
+        "tags": [
+          "storage_module"
+        ],
+        "x-logos-derived": true,
+        "x-logos-method": "version",
+        "x-logos-module": "storage_module"
+      }
+    },
+    "/modules/{module}": {
+      "get": {
+        "description": "The rpc.schema view: interface_status, the complete LIDL contract as `interface` when ok, this bridge's exposure, the digests and the live report.",
+        "operationId": "getModule",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "module",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "The bridge's view of one module. Keys not listed here are the live report.",
+                  "properties": {
+                    "authoritative": {
+                      "type": "boolean"
+                    },
+                    "contract_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "cross_check": {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
+                    "exposure": {
+                      "properties": {
+                        "events": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "methods": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "interface": {
+                      "description": "The complete LIDL JSON AST (as `lidl json --identity` prints it); present only when interface_status is ok.",
+                      "type": "object"
+                    },
+                    "interface_error": {
+                      "type": "string"
+                    },
+                    "interface_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "interface_status": {
+                      "enum": [
+                        "pending",
+                        "ok",
+                        "untyped",
+                        "invalid"
+                      ],
+                      "type": "string"
+                    },
+                    "module": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "module"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The module view."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonRpcError"
+                }
+              }
+            },
+            "description": "Not exposed or unknown: the same -32601 error object a denied call gets."
+          }
+        },
+        "summary": "Describe one exposed module.",
+        "tags": [
+          "bridge"
+        ],
+        "x-logos-bridge-op": true
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "description": "The OpenAPI 3.1.1 description of this bridge.",
+        "operationId": "getOpenApi",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "This OpenAPI document."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        },
+        "summary": "This document.",
+        "tags": [
+          "bridge"
+        ],
+        "x-logos-bridge-op": true
+      }
+    },
+    "/rpc": {
+      "post": {
+        "description": "One request or a batch. Every rpc.* operation and every `<module>.<method>` alias (see rpc.discover) is accepted here; events need the WebSocket endpoint (see /asyncapi.json). A request without an id is still answered, with id null: a module call is refused with -32600, and any other operation runs.",
+        "operationId": "postRpc",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "properties": {
+                      "id": {
+                        "$ref": "#/components/schemas/JsonRpcId"
+                      },
+                      "jsonrpc": {
+                        "const": "2.0"
+                      },
+                      "method": {
+                        "type": "string"
+                      },
+                      "params": {
+                        "type": [
+                          "object",
+                          "array"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "jsonrpc",
+                      "method"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": {
+                      "properties": {
+                        "id": {
+                          "$ref": "#/components/schemas/JsonRpcId"
+                        },
+                        "jsonrpc": {
+                          "const": "2.0"
+                        },
+                        "method": {
+                          "type": "string"
+                        },
+                        "params": {
+                          "type": [
+                            "object",
+                            "array"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "jsonrpc",
+                        "method"
+                      ],
+                      "type": "object"
+                    },
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "oneOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "id": {
+                              "$ref": "#/components/schemas/JsonRpcId"
+                            },
+                            "jsonrpc": {
+                              "const": "2.0"
+                            },
+                            "result": {}
+                          },
+                          "required": [
+                            "jsonrpc",
+                            "id",
+                            "result"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                        }
+                      ]
+                    },
+                    {
+                      "items": {
+                        "oneOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "id": {
+                                "$ref": "#/components/schemas/JsonRpcId"
+                              },
+                              "jsonrpc": {
+                                "const": "2.0"
+                              },
+                              "result": {}
+                            },
+                            "required": [
+                              "jsonrpc",
+                              "id",
+                              "result"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                          }
+                        ]
+                      },
+                      "minItems": 1,
+                      "type": "array"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The response, or the batch of responses. JSON-RPC failures ride in the body at 200."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "JSON-RPC 2.0 endpoint.",
+        "tags": [
+          "bridge"
+        ],
+        "x-logos-bridge-op": true
+      }
+    }
+  },
+  "servers": [
+    {
+      "description": "Loopback only.",
+      "url": "http://127.0.0.1:8645"
+    }
+  ],
+  "tags": [
+    {
+      "description": "The bridge's own routes.",
+      "name": "bridge"
+    },
+    {
+      "description": "Storage module",
+      "name": "storage_module"
+    }
+  ],
+  "x-logos-modules": [
+    {
+      "contract_sha256": "9f6bd141a1401b14ec151b579fd1e1076ba7916929f54101fd6843501dee92ac",
+      "exposure": {
+        "events": [
+          "storageStart",
+          "storageStop",
+          "storageConnect",
+          "storageUploadProgress",
+          "storageUploadDone",
+          "storageDownloadProgress",
+          "storageDownloadDone",
+          "storageDownloadManifestDone",
+          "storageRemoveDone"
+        ],
+        "methods": [
+          "migrateConfig",
+          "init",
+          "start",
+          "stop",
+          "libstorageVersion",
+          "moduleVersion",
+          "dataDir",
+          "network",
+          "peerId",
+          "spr",
+          "debug",
+          "collectMetrics",
+          "updateLogLevel",
+          "connect",
+          "togglePrivateQueries",
+          "uploadUrl",
+          "uploadInit",
+          "uploadChunk",
+          "uploadFinalize",
+          "uploadCancel",
+          "downloadToUrl",
+          "downloadChunks",
+          "downloadCancel",
+          "exists",
+          "fetch",
+          "remove",
+          "space",
+          "manifests",
+          "downloadManifest",
+          "importFiles",
+          "name",
+          "version",
+          "lidl"
+        ]
+      },
+      "interface_sha256": "f3e9b89b4fe0d9f988bdd24bad92c56a51178660ef0e4f68ef54b1261a452037",
+      "name": "storage_module",
+      "status": "ok"
+    }
+  ]
+}

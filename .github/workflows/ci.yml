@@ -48,3 +48,8 @@ jobs:
 
       - name: Unit tests
         run: nix flake check -L
+
+      # Also inside `nix flake check`; its own step so a document that breaks
+      # its OpenRPC/OpenAPI/AsyncAPI meta-schema is named as such.
+      - name: Documents validate against their meta-schemas
+        run: nix build ".#checks.$(nix eval --impure --raw --expr builtins.currentSystem).docs-metaschema" -L --no-link

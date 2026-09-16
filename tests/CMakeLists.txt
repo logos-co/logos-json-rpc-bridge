@@ -31,6 +31,7 @@ logos_test(
         test_digest.cpp
         test_discovery_io.cpp
         test_discovery_model.cpp
+        test_doc_goldens.cpp
         test_doc_publisher.cpp
         test_docs.cpp
         test_docs_cli.cpp
@@ -54,10 +55,12 @@ logos_test(
         ${LIDL_ROOT}/lib/liblogos_lidl.a
         ${LGX_LIBRARY}
 )
+# Fixtures and goldens are read from the source tree, which the nix check builds in.
 target_compile_definitions(json_rpc_bridge_tests PRIVATE
     LOGOS_LIDL_REV="$ENV{LOGOS_LIDL_REV}"
     LOGOS_LIDL_VERSION="$ENV{LOGOS_LIDL_VERSION}"
     JSON_RPC_BRIDGE_VERSION="${BRIDGE_VERSION}"
     BRIDGE_HAVE_LGX_EXTRACT_ASSETS=${BRIDGE_HAVE_LGX_EXTRACT_ASSETS}
     BRIDGE_DOCS_NO_MAIN
-    BRIDGE_TEST_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+    BRIDGE_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
+    BRIDGE_TEST_GOLDENS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/goldens")

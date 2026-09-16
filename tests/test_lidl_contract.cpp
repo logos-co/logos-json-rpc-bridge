@@ -1,12 +1,6 @@
 // readContract: the one place logos-lidl is called.
 //
-// Fixtures (tests/fixtures/contracts), taken from real builds:
-//   storage_module.lidl            #lidl of logos-storage-module on builder 5a962b8
-//                                  (= its lidl() answer and LGX asset, sha256 9f6bd141...)
-//   test_fullapi_cpp.legacy.lidl   #lidl of logos-test-modules test_fullapi_cpp from an
-//                                  older writer (`doVoid() -> void`), so non-canonical
-//   test_fullapi_cpp.lidl          `lidl fmt` of the legacy file (lidl-cli 1f54a2a)
-//   test_fullapi_cpp.identity.json `lidl json --identity` of the canonical file
+// Fixtures: tests/fixtures (provenance in SOURCES.md).
 
 #include <logos_test.h>
 
@@ -23,7 +17,7 @@ using namespace bridge;
 namespace {
 
 std::string fixture(const std::string& name) {
-    const std::string path = std::string(BRIDGE_TEST_FIXTURES) + "/contracts/" + name;
+    const std::string path = std::string(BRIDGE_TEST_FIXTURES_DIR) + "/" + name;
     std::ifstream in(path, std::ios::binary);
     if (!in) throw LogosTestFailure("missing fixture " + path);
     std::ostringstream ss;
@@ -43,7 +37,7 @@ const char* kSmall = "module m {\n  depends []\n\n  method get(key: tstr, ttl: ?
 } // namespace
 
 LOGOS_TEST(a_canonical_contract_reads_clean) {
-    const ContractResult r = readContract(fixture("test_fullapi_cpp.lidl"), "test_fullapi_cpp");
+    const ContractResult r = readContract(fixture("lidl/test_fullapi_cpp.lidl"), "test_fullapi_cpp");
     LOGOS_ASSERT_TRUE(r.ok);
     LOGOS_ASSERT_TRUE(r.warnings.empty());
     LOGOS_ASSERT_TRUE(r.lint.empty());
@@ -80,16 +74,16 @@ LOGOS_TEST(params_carry_names_and_optionality) {
 
 // The served AST is exactly what `lidl json --identity` prints for the file.
 LOGOS_TEST(the_ast_equals_lidl_json_identity) {
-    const ContractResult r = readContract(fixture("test_fullapi_cpp.lidl"), "test_fullapi_cpp");
+    const ContractResult r = readContract(fixture("lidl/test_fullapi_cpp.lidl"), "test_fullapi_cpp");
     LOGOS_ASSERT_TRUE(r.ok);
     const auto served = nlohmann::json::parse(r.astJson);
-    const auto cli = nlohmann::json::parse(fixture("test_fullapi_cpp.identity.json"));
+    const auto cli = nlohmann::json::parse(fixture("ast/test_fullapi_cpp.json"));
     LOGOS_ASSERT_TRUE(served == cli);
-    LOGOS_ASSERT_EQ(served.dump() + "\n", fixture("test_fullapi_cpp.identity.json"));
+    LOGOS_ASSERT_EQ(served.dump() + "\n", fixture("ast/test_fullapi_cpp.json"));
 }
 
 LOGOS_TEST(a_real_storage_contract_reads_clean) {
-    const ContractResult r = readContract(fixture("storage_module.lidl"), "storage_module");
+    const ContractResult r = readContract(fixture("lidl/storage_module.lidl"), "storage_module");
     LOGOS_ASSERT_TRUE(r.ok);
     LOGOS_ASSERT_TRUE(r.warnings.empty());
     LOGOS_ASSERT_EQ(r.contractVersion, std::string("2.1.3"));
@@ -99,7 +93,7 @@ LOGOS_TEST(a_real_storage_contract_reads_clean) {
 // An older writer's `-> void` still parses; it just does not re-serialize to itself.
 LOGOS_TEST(a_legacy_void_contract_is_accepted_but_non_canonical) {
     const ContractResult r =
-        readContract(fixture("test_fullapi_cpp.legacy.lidl"), "test_fullapi_cpp");
+        readContract(fixture("legacy/test_fullapi_cpp.lidl"), "test_fullapi_cpp");
     LOGOS_ASSERT_TRUE(r.ok);
     LOGOS_ASSERT_TRUE(hasWarning(r, "non_canonical"));
     const auto ast = nlohmann::json::parse(r.astJson);
@@ -113,7 +107,7 @@ LOGOS_TEST(a_legacy_void_contract_is_accepted_but_non_canonical) {
     LOGOS_ASSERT_TRUE(sawDoVoid);
     // Same contract, canonical spelling: the served ASTs agree.
     const ContractResult canonical =
-        readContract(fixture("test_fullapi_cpp.lidl"), "test_fullapi_cpp");
+        readContract(fixture("lidl/test_fullapi_cpp.lidl"), "test_fullapi_cpp");
     LOGOS_ASSERT_EQ(r.astJson, canonical.astJson);
 }
 

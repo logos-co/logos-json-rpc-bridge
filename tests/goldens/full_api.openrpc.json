@@ -1,0 +1,3844 @@
+{
+  "components": {
+    "errors": {
+      "CallFailed": {
+        "code": -32000,
+        "data": {
+          "logos_error_code": 3,
+          "logos_error_name": "MODULE_ERROR"
+        },
+        "message": "call could not be dispatched"
+      },
+      "InvalidParams": {
+        "code": -32602,
+        "data": {
+          "logos_error_code": 2,
+          "logos_error_name": "INVALID_PARAMS"
+        },
+        "message": "invalid params"
+      },
+      "InvalidRequest": {
+        "code": -32600,
+        "data": {
+          "logos_error_code": 2,
+          "logos_error_name": "INVALID_PARAMS"
+        },
+        "message": "invalid request"
+      },
+      "MethodNotFound": {
+        "code": -32601,
+        "data": {
+          "logos_error_code": 1,
+          "logos_error_name": "METHOD_NOT_FOUND"
+        },
+        "message": "method not found"
+      },
+      "ModuleUnavailable": {
+        "code": -32001,
+        "data": {
+          "logos_error_code": 8,
+          "logos_error_name": "NOT_READY"
+        },
+        "message": "module unavailable"
+      },
+      "NotAuthorised": {
+        "code": -32004,
+        "data": {
+          "logos_error_code": 4,
+          "logos_error_name": "NOT_AUTHORISED"
+        },
+        "message": "not authorised"
+      },
+      "Overloaded": {
+        "code": -32029,
+        "data": {
+          "logos_error_code": 8,
+          "logos_error_name": "NOT_READY"
+        },
+        "message": "overloaded"
+      },
+      "ParseError": {
+        "code": -32700,
+        "data": {
+          "logos_error_code": 2,
+          "logos_error_name": "INVALID_PARAMS"
+        },
+        "message": "parse error"
+      },
+      "ShuttingDown": {
+        "code": -32006,
+        "data": {
+          "logos_error_code": 8,
+          "logos_error_name": "NOT_READY"
+        },
+        "message": "shutting down"
+      },
+      "TransportError": {
+        "code": -32003,
+        "data": {
+          "logos_error_code": 5,
+          "logos_error_name": "TRANSPORT_ERROR"
+        },
+        "message": "transport error"
+      },
+      "UpstreamFailed": {
+        "code": -32603,
+        "data": {
+          "logos_error_code": 3,
+          "logos_error_name": "MODULE_ERROR"
+        },
+        "message": "upstream call failed"
+      },
+      "UpstreamTimeout": {
+        "code": -32002,
+        "data": {
+          "logos_error_code": 6,
+          "logos_error_name": "TIMEOUT"
+        },
+        "message": "upstream call timed out"
+      }
+    },
+    "schemas": {
+      "Bytes": {
+        "additionalProperties": false,
+        "description": "A LIDL bstr: the bytes as base64url without padding (RFC 4648 section 5), carried as the object's only key. Do not name a map key \"_bytes\".",
+        "properties": {
+          "_bytes": {
+            "pattern": "^[A-Za-z0-9_-]*$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "_bytes"
+        ],
+        "title": "Bytes",
+        "type": "object"
+      },
+      "LogosResult": {
+        "description": "A LIDL result. A provider that ran and failed answers success=false here: an application failure is a successful call, never a JSON-RPC error.",
+        "properties": {
+          "error": {
+            "description": "The failure message as a string; null when there is none."
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "value": {
+            "description": "The payload; any JSON value, null when absent."
+          }
+        },
+        "required": [
+          "success"
+        ],
+        "title": "LogosResult",
+        "type": "object"
+      },
+      "ProviderRejection": {
+        "additionalProperties": false,
+        "description": "The provider refused the call and said why. It arrives as the call's result, not as a JSON-RPC error.",
+        "properties": {
+          "code": {
+            "description": "Known codes: dispatch_failed (the argument values were refused), invalid_args (wrong argument count), unknown_method (reserved; not emitted yet). Treat any other code as a refusal too.",
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "origin": {
+            "description": "The module that refused.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "origin"
+        ],
+        "title": "ProviderRejection",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "JSON-RPC 2.0 access to Logos modules. The `rpc.*` methods are the bridge's own operations (x-logos-bridge-op). Every exposed module method is listed as `<module>.<method>`, an exact alias for `rpc.call`, typed from the module's canonical LIDL contract when it has one; x-logos-untyped marks names-only modules. A result is the method's value or a ProviderRejection, and bytes travel as `{\"_bytes\": \"<base64url>\"}`. x-logos-events lists the subscribable events, delivered over WebSocket as `rpc.event`; x-logos-modules gives every module's status, digests and exposure. Policy restricts calls, not knowledge: methods cover what this bridge lets you call, while component schemas cover every record in each contract.",
+    "title": "Logos JSON-RPC bridge",
+    "version": "0.1.0"
+  },
+  "methods": [
+    {
+      "description": "Calls `method` on `module` with `params`: an object (by name) or an array (by position); absent means `[]`. The result is the method's return value, or a ProviderRejection when the provider refused the arguments. An application failure (a LogosResult with success=false) is a successful call. Denied, unexposed and unknown targets all get the same -32601. Every module method below is also callable as `<module>.<method>`, an exact alias for this operation; notifications are refused.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "rpc.call",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "module",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "method",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "By name (object) or by position (array); absent means [].",
+          "name": "params",
+          "required": false,
+          "schema": {
+            "type": [
+              "object",
+              "array"
+            ]
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "description": "The method's return value (see the <module>.<method> methods for typed results), or a ProviderRejection."
+        }
+      },
+      "summary": "Call a method on an exposed module.",
+      "tags": [
+        {
+          "name": "bridge"
+        }
+      ],
+      "x-logos-bridge-op": true
+    },
+    {
+      "description": "Registers the caller-assigned `subscription` id for `event` on `module`. Events arrive as `rpc.event` notifications on the WebSocket connection that subscribed, so this is WebSocket-only in practice: an HTTP request has no channel to deliver them on. The ack says `registered` because the upstream subscription arms when the provider appears; re-subscribing an id this connection already holds answers `active` and never double-delivers. A lost provider ends the subscription with `rpc.subscription_terminated`. See x-logos-events for each event's data.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "rpc.subscribe",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "subscription",
+          "required": true,
+          "schema": {
+            "description": "The caller-assigned subscription id.",
+            "title": "SubscriptionId",
+            "type": [
+              "string",
+              "number"
+            ]
+          }
+        },
+        {
+          "name": "module",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "event",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "subscribed",
+        "schema": {
+          "additionalProperties": false,
+          "properties": {
+            "event": {
+              "type": "string"
+            },
+            "module": {
+              "type": "string"
+            },
+            "operation": {
+              "const": "subscribe"
+            },
+            "state": {
+              "description": "registered: held, arms when the provider appears; active: this id was already subscribed.",
+              "enum": [
+                "registered",
+                "active"
+              ],
+              "type": "string"
+            },
+            "subscription": {
+              "description": "The caller-assigned subscription id.",
+              "title": "SubscriptionId",
+              "type": [
+                "string",
+                "number"
+              ]
+            }
+          },
+          "required": [
+            "subscription",
+            "operation",
+            "module",
+            "event",
+            "state"
+          ],
+          "type": "object"
+        }
+      },
+      "summary": "Subscribe to an exposed module event.",
+      "tags": [
+        {
+          "name": "bridge"
+        }
+      ],
+      "x-logos-bridge-op": true
+    },
+    {
+      "description": "Stops the subscription with this caller-assigned id. Idempotent: an unknown id is acknowledged too.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "rpc.unsubscribe",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "subscription",
+          "required": true,
+          "schema": {
+            "description": "The caller-assigned subscription id.",
+            "title": "SubscriptionId",
+            "type": [
+              "string",
+              "number"
+            ]
+          }
+        }
+      ],
+      "result": {
+        "name": "unsubscribed",
+        "schema": {
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "unsubscribe"
+            },
+            "subscription": {
+              "description": "The caller-assigned subscription id.",
+              "title": "SubscriptionId",
+              "type": [
+                "string",
+                "number"
+              ]
+            }
+          },
+          "required": [
+            "subscription",
+            "operation"
+          ],
+          "type": "object"
+        }
+      },
+      "summary": "Drop a subscription.",
+      "tags": [
+        {
+          "name": "bridge"
+        }
+      ],
+      "x-logos-bridge-op": true
+    },
+    {
+      "description": "The bridge's view of `module`: interface_status (pending, ok, untyped or invalid), the complete LIDL contract as `interface` when ok, this bridge's `exposure` (what can be called or subscribed to), the interface_sha256 and contract_sha256 digests, and the live report. Policy restricts calls, not knowledge: `interface` is never filtered. Unexposed and unknown modules get -32601.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "rpc.schema",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "module",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "view",
+        "schema": {
+          "description": "The bridge's view of one module. Keys not listed here are the live report.",
+          "properties": {
+            "authoritative": {
+              "type": "boolean"
+            },
+            "contract_sha256": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "cross_check": {
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "exposure": {
+              "properties": {
+                "events": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "methods": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            },
+            "interface": {
+              "description": "The complete LIDL JSON AST (as `lidl json --identity` prints it); present only when interface_status is ok.",
+              "type": "object"
+            },
+            "interface_error": {
+              "type": "string"
+            },
+            "interface_sha256": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "interface_status": {
+              "enum": [
+                "pending",
+                "ok",
+                "untyped",
+                "invalid"
+              ],
+              "type": "string"
+            },
+            "module": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "module"
+          ],
+          "type": "object"
+        }
+      },
+      "summary": "Describe one exposed module.",
+      "tags": [
+        {
+          "name": "bridge"
+        }
+      ],
+      "x-logos-bridge-op": true
+    },
+    {
+      "description": "The same views as rpc.schema, in configuration order, without `interface`.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "rpc.list_modules",
+      "paramStructure": "either",
+      "params": [],
+      "result": {
+        "name": "views",
+        "schema": {
+          "items": {
+            "description": "The bridge's view of one module, without `interface`.",
+            "properties": {
+              "authoritative": {
+                "type": "boolean"
+              },
+              "contract_sha256": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "cross_check": {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "exposure": {
+                "properties": {
+                  "events": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "methods": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              },
+              "interface_error": {
+                "type": "string"
+              },
+              "interface_sha256": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "interface_status": {
+                "enum": [
+                  "pending",
+                  "ok",
+                  "untyped",
+                  "invalid"
+                ],
+                "type": "string"
+              },
+              "module": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "module"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "summary": "Describe every exposed module.",
+      "tags": [
+        {
+          "name": "bridge"
+        }
+      ],
+      "x-logos-bridge-op": true
+    },
+    {
+      "description": "Answers \"pong\".",
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "rpc.ping",
+      "paramStructure": "either",
+      "params": [],
+      "result": {
+        "name": "pong",
+        "schema": {
+          "const": "pong"
+        }
+      },
+      "summary": "Check that the bridge answers.",
+      "tags": [
+        {
+          "name": "bridge"
+        }
+      ],
+      "x-logos-bridge-op": true
+    },
+    {
+      "description": "The module ABI has no cancel primitive, so this always answers `{\"cancelled\": false, \"reason\": \"not_supported_upstream\"}`. A request is never known to have had no effect.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "rpc.cancel",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "The id of the request to cancel.",
+          "name": "id",
+          "required": false,
+          "schema": {
+            "description": "A JSON-RPC request id; a reply echoes it.",
+            "title": "JsonRpcId",
+            "type": [
+              "string",
+              "number",
+              "null"
+            ]
+          }
+        }
+      ],
+      "result": {
+        "name": "cancellation",
+        "schema": {
+          "additionalProperties": false,
+          "properties": {
+            "cancelled": {
+              "const": false
+            },
+            "reason": {
+              "const": "not_supported_upstream"
+            }
+          },
+          "required": [
+            "cancelled",
+            "reason"
+          ],
+          "type": "object"
+        }
+      },
+      "summary": "Cancel a request (not supported upstream).",
+      "tags": [
+        {
+          "name": "bridge"
+        }
+      ],
+      "x-logos-bridge-op": true
+    },
+    {
+      "description": "Returns the OpenRPC 1.3.2 description of this bridge: its operations, every exposed module method (typed from the module's lidl() contract where it has one), x-logos-events and x-logos-modules.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "rpc.discover",
+      "paramStructure": "either",
+      "params": [],
+      "result": {
+        "name": "OpenRPC Schema",
+        "schema": {
+          "description": "An OpenRPC 1.3.2 document: this one. Its meta-schema is https://meta.open-rpc.org/.",
+          "type": "object"
+        }
+      },
+      "summary": "Describe this bridge (this document).",
+      "tags": [
+        {
+          "name": "bridge"
+        }
+      ],
+      "x-logos-bridge-op": true
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.whoAmI",
+      "paramStructure": "either",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "whoAmI",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.echoString",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "echoString",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.echoBytes",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/Bytes"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/Bytes"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "echoBytes",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.echoInt",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {
+            "format": "int64",
+            "maximum": 9223372036854775807,
+            "minimum": -9223372036854775808,
+            "type": "integer"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "format": "int64",
+              "maximum": 9223372036854775807,
+              "minimum": -9223372036854775808,
+              "type": "integer"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "echoInt",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.echoUint",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {
+            "format": "uint64",
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "type": "integer"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "echoUint",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.echoDouble",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {
+            "format": "double",
+            "type": "number"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "format": "double",
+              "type": "number"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "echoDouble",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.echoBool",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "echoBool",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.echoAny",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {}
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {},
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "echoAny",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.echoStringList",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "echoStringList",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.echoIntList",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {
+            "items": {
+              "format": "int64",
+              "maximum": 9223372036854775807,
+              "minimum": -9223372036854775808,
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "items": {
+                "format": "int64",
+                "maximum": 9223372036854775807,
+                "minimum": -9223372036854775808,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "echoIntList",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.echoUintList",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {
+            "items": {
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "items": {
+                "format": "uint64",
+                "maximum": 18446744073709551615,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "echoUintList",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.echoDoubleList",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {
+            "items": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": "array"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "items": {
+                "format": "double",
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "echoDoubleList",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.echoBoolList",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {
+            "items": {
+              "type": "boolean"
+            },
+            "type": "array"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "boolean"
+              },
+              "type": "array"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "echoBoolList",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.echoList",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {
+            "items": {},
+            "type": "array"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "items": {},
+              "type": "array"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "echoList",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.echoMap",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {
+            "additionalProperties": {},
+            "type": "object"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "echoMap",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.echoTriple",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "i",
+          "required": true,
+          "schema": {
+            "format": "int64",
+            "maximum": 9223372036854775807,
+            "minimum": -9223372036854775808,
+            "type": "integer"
+          }
+        },
+        {
+          "name": "s",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "b",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/Bytes"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "echoTriple",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.doVoid",
+      "paramStructure": "either",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "const": true
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "doVoid",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.makeResult",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "ok",
+          "required": true,
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/LogosResult"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "makeResult",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.fireStringEvent",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "fireStringEvent",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.fireBytesEvent",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/Bytes"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "fireBytesEvent",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.fireIntEvent",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {
+            "format": "int64",
+            "maximum": 9223372036854775807,
+            "minimum": -9223372036854775808,
+            "type": "integer"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "fireIntEvent",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.fireUintEvent",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {
+            "format": "uint64",
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "type": "integer"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "fireUintEvent",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.fireDoubleEvent",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {
+            "format": "double",
+            "type": "number"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "fireDoubleEvent",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.fireBoolEvent",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "fireBoolEvent",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.fireAnyEvent",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {}
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "fireAnyEvent",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.fireStringListEvent",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "fireStringListEvent",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.fireIntListEvent",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {
+            "items": {
+              "format": "int64",
+              "maximum": 9223372036854775807,
+              "minimum": -9223372036854775808,
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "fireIntListEvent",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.fireUintListEvent",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {
+            "items": {
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "fireUintListEvent",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.fireDoubleListEvent",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {
+            "items": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": "array"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "fireDoubleListEvent",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.fireBoolListEvent",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {
+            "items": {
+              "type": "boolean"
+            },
+            "type": "array"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "fireBoolListEvent",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.fireListEvent",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {
+            "items": {},
+            "type": "array"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "fireListEvent",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.fireMapEvent",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "v",
+          "required": true,
+          "schema": {
+            "additionalProperties": {},
+            "type": "object"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "fireMapEvent",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.fireTripleEvent",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "i",
+          "required": true,
+          "schema": {
+            "format": "int64",
+            "maximum": 9223372036854775807,
+            "minimum": -9223372036854775808,
+            "type": "integer"
+          }
+        },
+        {
+          "name": "s",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "b",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/Bytes"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-method": "fireTripleEvent",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "description": "The module's name, as declared in its metadata.\n\nBuilt-in: always callable for an exposed module, whatever this bridge's method policy.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.name",
+      "paramStructure": "either",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "summary": "The module's name, as declared in its metadata.",
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-derived": true,
+      "x-logos-method": "name",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "description": "The module's version, as declared in its metadata.\n\nBuilt-in: always callable for an exposed module, whatever this bridge's method policy.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.version",
+      "paramStructure": "either",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "summary": "The module's version, as declared in its metadata.",
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-derived": true,
+      "x-logos-method": "version",
+      "x-logos-module": "test_fullapi_cpp"
+    },
+    {
+      "description": "The module's canonical LIDL interface document.\n\nReturns this module's full canonical LIDL contract: the exact `.lidl` text its build published, never filtered by this bridge's policy.\n\nBuilt-in: always callable for an exposed module, whatever this bridge's method policy.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/ParseError"
+        },
+        {
+          "$ref": "#/components/errors/InvalidRequest"
+        },
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamFailed"
+        },
+        {
+          "$ref": "#/components/errors/CallFailed"
+        },
+        {
+          "$ref": "#/components/errors/ModuleUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/UpstreamTimeout"
+        },
+        {
+          "$ref": "#/components/errors/TransportError"
+        },
+        {
+          "$ref": "#/components/errors/NotAuthorised"
+        },
+        {
+          "$ref": "#/components/errors/ShuttingDown"
+        },
+        {
+          "$ref": "#/components/errors/Overloaded"
+        }
+      ],
+      "name": "test_fullapi_cpp.lidl",
+      "paramStructure": "either",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/components/schemas/ProviderRejection"
+            }
+          ]
+        }
+      },
+      "summary": "The module's canonical LIDL interface document.",
+      "tags": [
+        {
+          "name": "test_fullapi_cpp"
+        }
+      ],
+      "x-logos-derived": true,
+      "x-logos-method": "lidl",
+      "x-logos-module": "test_fullapi_cpp"
+    }
+  ],
+  "openrpc": "1.3.2",
+  "servers": [
+    {
+      "description": "JSON-RPC 2.0 over HTTP POST with Content-Type: application/json. Events are not delivered over HTTP.",
+      "name": "http",
+      "url": "http://127.0.0.1:8645/rpc"
+    },
+    {
+      "description": "JSON-RPC 2.0 over WebSocket, subprotocol jsonrpc-bridge.v1: calls, subscriptions and rpc.event notifications.",
+      "name": "ws",
+      "url": "ws://127.0.0.1:8645/ws"
+    }
+  ],
+  "x-logos-events": [
+    {
+      "dataSchema": {
+        "additionalItems": false,
+        "items": [
+          {
+            "type": "string"
+          }
+        ],
+        "maxItems": 1,
+        "minItems": 1,
+        "type": "array"
+      },
+      "event": "stringEvent",
+      "module": "test_fullapi_cpp",
+      "name": "test_fullapi_cpp.stringEvent",
+      "notification": "rpc.event",
+      "params": [
+        "v"
+      ],
+      "subscribe": "rpc.subscribe"
+    },
+    {
+      "dataSchema": {
+        "additionalItems": false,
+        "items": [
+          {
+            "$ref": "#/components/schemas/Bytes"
+          }
+        ],
+        "maxItems": 1,
+        "minItems": 1,
+        "type": "array"
+      },
+      "event": "bytesEvent",
+      "module": "test_fullapi_cpp",
+      "name": "test_fullapi_cpp.bytesEvent",
+      "notification": "rpc.event",
+      "params": [
+        "v"
+      ],
+      "subscribe": "rpc.subscribe"
+    },
+    {
+      "dataSchema": {
+        "additionalItems": false,
+        "items": [
+          {
+            "format": "int64",
+            "maximum": 9223372036854775807,
+            "minimum": -9223372036854775808,
+            "type": "integer"
+          }
+        ],
+        "maxItems": 1,
+        "minItems": 1,
+        "type": "array"
+      },
+      "event": "intEvent",
+      "module": "test_fullapi_cpp",
+      "name": "test_fullapi_cpp.intEvent",
+      "notification": "rpc.event",
+      "params": [
+        "v"
+      ],
+      "subscribe": "rpc.subscribe"
+    },
+    {
+      "dataSchema": {
+        "additionalItems": false,
+        "items": [
+          {
+            "format": "uint64",
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "type": "integer"
+          }
+        ],
+        "maxItems": 1,
+        "minItems": 1,
+        "type": "array"
+      },
+      "event": "uintEvent",
+      "module": "test_fullapi_cpp",
+      "name": "test_fullapi_cpp.uintEvent",
+      "notification": "rpc.event",
+      "params": [
+        "v"
+      ],
+      "subscribe": "rpc.subscribe"
+    },
+    {
+      "dataSchema": {
+        "additionalItems": false,
+        "items": [
+          {
+            "format": "double",
+            "type": "number"
+          }
+        ],
+        "maxItems": 1,
+        "minItems": 1,
+        "type": "array"
+      },
+      "event": "doubleEvent",
+      "module": "test_fullapi_cpp",
+      "name": "test_fullapi_cpp.doubleEvent",
+      "notification": "rpc.event",
+      "params": [
+        "v"
+      ],
+      "subscribe": "rpc.subscribe"
+    },
+    {
+      "dataSchema": {
+        "additionalItems": false,
+        "items": [
+          {
+            "type": "boolean"
+          }
+        ],
+        "maxItems": 1,
+        "minItems": 1,
+        "type": "array"
+      },
+      "event": "boolEvent",
+      "module": "test_fullapi_cpp",
+      "name": "test_fullapi_cpp.boolEvent",
+      "notification": "rpc.event",
+      "params": [
+        "v"
+      ],
+      "subscribe": "rpc.subscribe"
+    },
+    {
+      "dataSchema": {
+        "additionalItems": false,
+        "items": [
+          {}
+        ],
+        "maxItems": 1,
+        "minItems": 1,
+        "type": "array"
+      },
+      "event": "anyEvent",
+      "module": "test_fullapi_cpp",
+      "name": "test_fullapi_cpp.anyEvent",
+      "notification": "rpc.event",
+      "params": [
+        "v"
+      ],
+      "subscribe": "rpc.subscribe"
+    },
+    {
+      "dataSchema": {
+        "additionalItems": false,
+        "items": [
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        ],
+        "maxItems": 1,
+        "minItems": 1,
+        "type": "array"
+      },
+      "event": "stringListEvent",
+      "module": "test_fullapi_cpp",
+      "name": "test_fullapi_cpp.stringListEvent",
+      "notification": "rpc.event",
+      "params": [
+        "v"
+      ],
+      "subscribe": "rpc.subscribe"
+    },
+    {
+      "dataSchema": {
+        "additionalItems": false,
+        "items": [
+          {
+            "items": {
+              "format": "int64",
+              "maximum": 9223372036854775807,
+              "minimum": -9223372036854775808,
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        ],
+        "maxItems": 1,
+        "minItems": 1,
+        "type": "array"
+      },
+      "event": "intListEvent",
+      "module": "test_fullapi_cpp",
+      "name": "test_fullapi_cpp.intListEvent",
+      "notification": "rpc.event",
+      "params": [
+        "v"
+      ],
+      "subscribe": "rpc.subscribe"
+    },
+    {
+      "dataSchema": {
+        "additionalItems": false,
+        "items": [
+          {
+            "items": {
+              "format": "uint64",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        ],
+        "maxItems": 1,
+        "minItems": 1,
+        "type": "array"
+      },
+      "event": "uintListEvent",
+      "module": "test_fullapi_cpp",
+      "name": "test_fullapi_cpp.uintListEvent",
+      "notification": "rpc.event",
+      "params": [
+        "v"
+      ],
+      "subscribe": "rpc.subscribe"
+    },
+    {
+      "dataSchema": {
+        "additionalItems": false,
+        "items": [
+          {
+            "items": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": "array"
+          }
+        ],
+        "maxItems": 1,
+        "minItems": 1,
+        "type": "array"
+      },
+      "event": "doubleListEvent",
+      "module": "test_fullapi_cpp",
+      "name": "test_fullapi_cpp.doubleListEvent",
+      "notification": "rpc.event",
+      "params": [
+        "v"
+      ],
+      "subscribe": "rpc.subscribe"
+    },
+    {
+      "dataSchema": {
+        "additionalItems": false,
+        "items": [
+          {
+            "items": {
+              "type": "boolean"
+            },
+            "type": "array"
+          }
+        ],
+        "maxItems": 1,
+        "minItems": 1,
+        "type": "array"
+      },
+      "event": "boolListEvent",
+      "module": "test_fullapi_cpp",
+      "name": "test_fullapi_cpp.boolListEvent",
+      "notification": "rpc.event",
+      "params": [
+        "v"
+      ],
+      "subscribe": "rpc.subscribe"
+    },
+    {
+      "dataSchema": {
+        "additionalItems": false,
+        "items": [
+          {
+            "items": {},
+            "type": "array"
+          }
+        ],
+        "maxItems": 1,
+        "minItems": 1,
+        "type": "array"
+      },
+      "event": "listEvent",
+      "module": "test_fullapi_cpp",
+      "name": "test_fullapi_cpp.listEvent",
+      "notification": "rpc.event",
+      "params": [
+        "v"
+      ],
+      "subscribe": "rpc.subscribe"
+    },
+    {
+      "dataSchema": {
+        "additionalItems": false,
+        "items": [
+          {
+            "additionalProperties": {},
+            "type": "object"
+          }
+        ],
+        "maxItems": 1,
+        "minItems": 1,
+        "type": "array"
+      },
+      "event": "mapEvent",
+      "module": "test_fullapi_cpp",
+      "name": "test_fullapi_cpp.mapEvent",
+      "notification": "rpc.event",
+      "params": [
+        "v"
+      ],
+      "subscribe": "rpc.subscribe"
+    },
+    {
+      "dataSchema": {
+        "additionalItems": false,
+        "items": [
+          {
+            "format": "int64",
+            "maximum": 9223372036854775807,
+            "minimum": -9223372036854775808,
+            "type": "integer"
+          },
+          {
+            "type": "string"
+          },
+          {
+            "$ref": "#/components/schemas/Bytes"
+          }
+        ],
+        "maxItems": 3,
+        "minItems": 3,
+        "type": "array"
+      },
+      "event": "tripleEvent",
+      "module": "test_fullapi_cpp",
+      "name": "test_fullapi_cpp.tripleEvent",
+      "notification": "rpc.event",
+      "params": [
+        "i",
+        "s",
+        "b"
+      ],
+      "subscribe": "rpc.subscribe"
+    }
+  ],
+  "x-logos-modules": [
+    {
+      "contract_sha256": "6e92054db23a3b3bfb78179647a0d67315c48a2efd6e0a515b5f0b9bf6b7687c",
+      "exposure": {
+        "events": [
+          "stringEvent",
+          "bytesEvent",
+          "intEvent",
+          "uintEvent",
+          "doubleEvent",
+          "boolEvent",
+          "anyEvent",
+          "stringListEvent",
+          "intListEvent",
+          "uintListEvent",
+          "doubleListEvent",
+          "boolListEvent",
+          "listEvent",
+          "mapEvent",
+          "tripleEvent"
+        ],
+        "methods": [
+          "whoAmI",
+          "echoString",
+          "echoBytes",
+          "echoInt",
+          "echoUint",
+          "echoDouble",
+          "echoBool",
+          "echoAny",
+          "echoStringList",
+          "echoIntList",
+          "echoUintList",
+          "echoDoubleList",
+          "echoBoolList",
+          "echoList",
+          "echoMap",
+          "echoTriple",
+          "doVoid",
+          "makeResult",
+          "fireStringEvent",
+          "fireBytesEvent",
+          "fireIntEvent",
+          "fireUintEvent",
+          "fireDoubleEvent",
+          "fireBoolEvent",
+          "fireAnyEvent",
+          "fireStringListEvent",
+          "fireIntListEvent",
+          "fireUintListEvent",
+          "fireDoubleListEvent",
+          "fireBoolListEvent",
+          "fireListEvent",
+          "fireMapEvent",
+          "fireTripleEvent",
+          "name",
+          "version",
+          "lidl"
+        ]
+      },
+      "interface_sha256": "2f5db9ac25ff9bb96149f8a2f7f3f89d854c6d1f82d67c5a969b007dea6ff6c7",
+      "name": "test_fullapi_cpp",
+      "status": "ok"
+    }
+  ]
+}

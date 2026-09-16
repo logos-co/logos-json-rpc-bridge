@@ -22,7 +22,7 @@ using namespace bridge;
 namespace {
 
 std::string fixture(const std::string& name) {
-    const std::string path = std::string(BRIDGE_TEST_FIXTURES) + "/" + name;
+    const std::string path = std::string(BRIDGE_TEST_FIXTURES_DIR) + "/" + name;
     std::ifstream in(path, std::ios::binary);
     if (!in) throw LogosTestFailure("missing fixture " + path);
     std::ostringstream ss;
@@ -89,9 +89,9 @@ LOGOS_TEST(sha256_is_the_same_fed_in_pieces) {
 LOGOS_TEST(sha256_hashes_utf8_bytes) {
     LOGOS_ASSERT_EQ(sha256Hex("\xe2\x80\x93"),
         std::string("d4f85d36757c12f0c6dab57721287f327efbfc46ea8c0f820301067f8627fc0f"));
-    LOGOS_ASSERT_EQ(sha256Hex(fixture("contracts/test_fullapi_cpp.lidl")),
+    LOGOS_ASSERT_EQ(sha256Hex(fixture("lidl/test_fullapi_cpp.lidl")),
         std::string("6e92054db23a3b3bfb78179647a0d67315c48a2efd6e0a515b5f0b9bf6b7687c"));
-    LOGOS_ASSERT_EQ(sha256Hex(fixture("contracts/storage_module.lidl")),
+    LOGOS_ASSERT_EQ(sha256Hex(fixture("lidl/storage_module.lidl")),
         std::string("9f6bd141a1401b14ec151b579fd1e1076ba7916929f54101fd6843501dee92ac"));
 }
 
@@ -134,7 +134,7 @@ LOGOS_TEST(the_vectors_pin_the_escapes_that_writers_disagree_on) {
 
 // The served interface of a real contract hashes to the Python vector.
 LOGOS_TEST(the_served_storage_interface_matches_its_vector) {
-    const ContractResult c = readContract(fixture("contracts/storage_module.lidl"), "storage_module");
+    const ContractResult c = readContract(fixture("lidl/storage_module.lidl"), "storage_module");
     LOGOS_ASSERT_TRUE(c.ok);
     const auto typed = typedContract(c);
     LOGOS_ASSERT_TRUE(typed != nullptr);

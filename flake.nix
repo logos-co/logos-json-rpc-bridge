@@ -67,6 +67,22 @@
       withDocsCli = builtins.mapAttrs (system: packages:
         if system == "x86_64-windows" then packages
         else packages // { json-rpc-bridge-docs = docsCli system; });
+
+      # The golden documents against the vendored OpenRPC/OpenAPI/AsyncAPI
+      # meta-schemas, offline. Native systems only: it runs Python.
+      docsMetaschema = system:
+        let
+          pkgs = logos-module-builder.lib.common.mkPkgs system;
+          python = pkgs.python3.withPackages (ps: [ ps.jsonschema ps.referencing ]);
+        in
+        pkgs.runCommand "json-rpc-bridge-docs-metaschema" { } ''
+          cp -r ${./tests} tests
+          PYTHONDONTWRITEBYTECODE=1 ${python}/bin/python3 tests/docs_metaschema.py \
+            --self-test --goldens tests/goldens | tee $out
+        '';
+      withDocsChecks = builtins.mapAttrs (system: checks:
+        if system == "x86_64-windows" then checks
+        else checks // { docs-metaschema = docsMetaschema system; });
     in
     module // {
       packages = withDocsCli module.packages;
@@ -75,13 +91,13 @@
       # hasTests by grepping the flake for exactly that, so a checks output
       # reached any other way records hasTests=false and `ws test` then reports
       # "no tests" WITHOUT failing.
-      checks = logos-module-builder.lib.mkLogosModuleTests {
+      checks = withDocsChecks (logos-module-builder.lib.mkLogosModuleTests {
         src = ./.;
         testDir = ./tests;
         configFile = ./metadata.json;
         flakeInputs = inputs;
         externalLibInputs = testLibs;
         preConfigure = lidlPreConfigure;
-      };
+      });
     };
 }
