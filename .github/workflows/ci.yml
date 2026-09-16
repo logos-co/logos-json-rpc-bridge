@@ -53,3 +53,8 @@ jobs:
       # its OpenRPC/OpenAPI/AsyncAPI meta-schema is named as such.
       - name: Documents validate against their meta-schemas
         run: nix build ".#checks.$(nix eval --impure --raw --expr builtins.currentSystem).docs-metaschema" -L --no-link
+
+      # Also inside `nix flake check`; its own step so a renderer that stops
+      # reproducing the served documents is named as such.
+      - name: The offline renderer reproduces the served documents
+        run: nix build ".#checks.$(nix eval --impure --raw --expr builtins.currentSystem).docs-golden" -L --no-link

@@ -1,0 +1,5 @@
+module storage_module {
+  depends []
+
+  method lidl() -> tstr
+}

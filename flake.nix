@@ -80,9 +80,18 @@
           PYTHONDONTWRITEBYTECODE=1 ${python}/bin/python3 tests/docs_metaschema.py \
             --self-test --goldens tests/goldens | tee $out
         '';
+      # The renderer reproduces those goldens, from files and from packages.
+      docsGolden = system: import ./nix/docs-golden.nix {
+        pkgs = logos-module-builder.lib.common.mkPkgs system;
+        docsCli = docsCli system;
+        lgx = logos-package.packages.${system}.lgx;
+      };
       withDocsChecks = builtins.mapAttrs (system: checks:
         if system == "x86_64-windows" then checks
-        else checks // { docs-metaschema = docsMetaschema system; });
+        else checks // {
+          docs-metaschema = docsMetaschema system;
+          docs-golden = docsGolden system;
+        });
     in
     module // {
       packages = withDocsCli module.packages;

@@ -10,6 +10,8 @@ One set of fixtures serves the unit tests, the `docs-golden` check and the
   reader produces the same JSON (`every_fixture_reads_to_its_vendored_ast`).
 - `legacy/` holds a contract as an older writer published it (not canonical).
 - `configs/<context>.json` are the bridge configs of the golden contexts.
+- `invalid/` and `configs/storage_with_untyped.json` are what `docs-golden` expects
+  the renderer to refuse (see below).
 - `interface-digest-vectors.json` is the digest contract with the Python SDK.
 
 Both kinds of file were written with the `lidl` CLI from logos-lidl branch `feat/lidl-cli` at
@@ -30,6 +32,18 @@ directory is looked up.
 | `ast/test_fullapi_ext_cpp.json` | `7e14b495d578976405ac7c1f014489a360d7b438c286f2951401fe29fcde868a` | `lidl json --identity lidl/test_fullapi_ext_cpp.lidl` |
 | `ast/storage_module.json` | `d071bc92e1bf23f2bf8d189f96bc370678d96dce2fae3ca00819bd0d605a5611` | `lidl json --identity lidl/storage_module.lidl` |
 | `ast/mini_module.json` | `659e5e15188aab4968cbfb3979ab4698f3469017a990dcdcd6080cac54fdd94c` | `lidl json --identity lidl/mini_module.lidl` |
+
+## Refusals (`docs-golden`, `tests/docs_golden.sh`)
+
+Written by hand for the refusals `json-rpc-bridge-docs` shares with discovery:
+
+| File | Expected |
+|---|---|
+| `invalid/malformed.lidl` | exit 4, `4:17: Expected parameter name (lidl reader <rev>)` |
+| `invalid/authored_lidl.lidl` | exit 4: it declares `lidl()`, which identity injection refuses (`lidl check` alone accepts it) |
+| `lidl/mini_module.lidl` given as `storage_module` | exit 4: it declares another module |
+| `invalid/non_loopback.json` | exit 3: `http.host` is not loopback |
+| `configs/storage_with_untyped.json` | exit 5 with only `storage_module`'s contract; with `--allow-untyped`, exactly `goldens/storage.openrpc.json` |
 
 ## `interface-digest-vectors.json`
 
