@@ -71,9 +71,8 @@ LOGOS_TEST(absent_params_becomes_an_empty_object) {
 
 // ── rpc.call target ─────────────────────────────────────────────────────────
 
-// Module and method are SEPARATE fields, never dot-joined: it mirrors the
-// transport spec's Request, keeps calls symmetric with subscriptions, and means
-// there is no split rule to get wrong.
+// rpc.call names module and method as separate fields, mirroring the transport
+// spec's Request. The dotted "<module>.<method>" form is the alias entry point.
 LOGOS_TEST(a_call_target_needs_both_fields_as_strings) {
     CallTarget t; MappedError e;
     LOGOS_ASSERT_TRUE(parseCallTarget(j(R"({"module":"m","method":"get"})"), &t, &e));
@@ -87,11 +86,14 @@ LOGOS_TEST(a_call_target_needs_both_fields_as_strings) {
     LOGOS_ASSERT_FALSE(parseCallTarget(j("[]"), &t, &e));
 }
 
-// A dotted name is NOT split into module and method — it is just a method name
-// that happens to contain a dot, and without a "module" field it is refused.
-LOGOS_TEST(a_dotted_method_name_is_not_split) {
+// Inside rpc.call params a dotted name is taken literally: only the alias entry
+// point splits names, and without a "module" field the call is refused.
+LOGOS_TEST(a_dotted_name_inside_rpc_call_params_is_literal) {
     CallTarget t; MappedError e;
     LOGOS_ASSERT_FALSE(parseCallTarget(j(R"({"method":"storage_module.get"})"), &t, &e));
+    LOGOS_ASSERT_TRUE(parseCallTarget(j(R"({"module":"m","method":"storage_module.get"})"), &t, &e));
+    LOGOS_ASSERT_EQ(t.module, std::string("m"));
+    LOGOS_ASSERT_EQ(t.method, std::string("storage_module.get"));
 }
 
 LOGOS_TEST(both_params_shapes_are_accepted_and_absent_becomes_an_array) {
@@ -199,4 +201,98 @@ LOGOS_TEST(the_operation_namespace_is_rpc_not_logos) {
     LOGOS_ASSERT_EQ(std::string(op::kCall), std::string("rpc.call"));
     LOGOS_ASSERT_EQ(std::string(op::kSubscribe), std::string("rpc.subscribe"));
     LOGOS_ASSERT_EQ(std::string(op::kTerminated), std::string("rpc.subscription_terminated"));
+}
+
+// ── aliases: "<module>.<method>" is exactly rpc.call ────────────────────────
+
+namespace {
+
+bool alias(const std::string& body, CallTarget* t, MappedError* e) {
+    RpcRequest r;
+    if (!parseRequest(j(body), &r, e)) return false;
+    return parseAliasCall(r, t, e);
+}
+
+} // namespace
+
+LOGOS_TEST(rpc_prefixed_names_are_always_bridge_operations) {
+    LOGOS_ASSERT_TRUE(isBridgeOp("rpc.call"));
+    LOGOS_ASSERT_TRUE(isBridgeOp("rpc.no_such_op"));
+    LOGOS_ASSERT_TRUE(isBridgeOp("rpc."));
+    LOGOS_ASSERT_FALSE(isBridgeOp("rpc"));
+    LOGOS_ASSERT_FALSE(isBridgeOp("rpcx.get"));
+    LOGOS_ASSERT_FALSE(isBridgeOp("storage_module.get"));
+}
+
+LOGOS_TEST(an_alias_splits_at_the_first_dot) {
+    std::string module, method;
+    LOGOS_ASSERT_TRUE(splitAlias("storage_module.get", &module, &method));
+    LOGOS_ASSERT_EQ(module, std::string("storage_module"));
+    LOGOS_ASSERT_EQ(method, std::string("get"));
+    LOGOS_ASSERT_TRUE(splitAlias("m.a.b", &module, &method));
+    LOGOS_ASSERT_EQ(module, std::string("m"));
+    LOGOS_ASSERT_EQ(method, std::string("a.b"));
+    LOGOS_ASSERT_TRUE(splitAlias("m.x", &module, &method));
+}
+
+LOGOS_TEST(a_name_without_an_inner_dot_is_not_an_alias) {
+    std::string module, method;
+    for (const char* name : {"get", ".get", "m.", ".", "", "..", ".m.x"})
+        LOGOS_ASSERT_FALSE(splitAlias(name, &module, &method));
+}
+
+// Not an alias and not an op: the same -32601 as every other unknown name.
+LOGOS_TEST(a_non_alias_is_refused_with_the_shared_not_found_bytes) {
+    CallTarget t; MappedError e;
+    LOGOS_ASSERT_FALSE(alias(R"({"jsonrpc":"2.0","id":1,"method":"get"})", &t, &e));
+    LOGOS_ASSERT_EQ(e.toJson().dump(), notFound().toJson().dump());
+    LOGOS_ASSERT_FALSE(alias(R"({"jsonrpc":"2.0","id":1,"method":"m."})", &t, &e));
+    LOGOS_ASSERT_EQ(e.toJson().dump(), notFound().toJson().dump());
+}
+
+LOGOS_TEST(alias_params_absent_become_an_empty_array) {
+    CallTarget t; MappedError e;
+    LOGOS_ASSERT_TRUE(alias(R"({"jsonrpc":"2.0","id":1,"method":"m.version"})", &t, &e));
+    LOGOS_ASSERT_EQ(t.module, std::string("m"));
+    LOGOS_ASSERT_EQ(t.method, std::string("version"));
+    LOGOS_ASSERT_EQ(t.params.dump(), std::string("[]"));
+}
+
+LOGOS_TEST(alias_params_objects_and_arrays_pass_through) {
+    CallTarget t; MappedError e;
+    LOGOS_ASSERT_TRUE(alias(R"({"jsonrpc":"2.0","id":1,"method":"m.get","params":{"key":"k"}})",
+                            &t, &e));
+    LOGOS_ASSERT_EQ(t.params.dump(), std::string(R"({"key":"k"})"));
+    LOGOS_ASSERT_TRUE(alias(R"({"jsonrpc":"2.0","id":1,"method":"m.get","params":["k",{}]})",
+                            &t, &e));
+    LOGOS_ASSERT_EQ(t.params.dump(), std::string(R"(["k",{}])"));
+    LOGOS_ASSERT_TRUE(alias(R"({"jsonrpc":"2.0","id":1,"method":"m.get","params":{}})", &t, &e));
+    LOGOS_ASSERT_TRUE(t.params.is_object());
+}
+
+LOGOS_TEST(alias_null_or_scalar_params_are_invalid_params) {
+    CallTarget t; MappedError e;
+    for (const char* p : {"null", "5", "\"k\"", "true"}) {
+        const std::string body =
+            std::string(R"({"jsonrpc":"2.0","id":1,"method":"m.get","params":)") + p + "}";
+        LOGOS_ASSERT_FALSE(alias(body, &t, &e));
+        LOGOS_ASSERT_EQ(e.jsonRpcCode, static_cast<int>(kInvalidParams));
+    }
+}
+
+// Refused before any lookup, so an unexposed module and an exposed one answer alike.
+LOGOS_TEST(an_alias_notification_is_an_invalid_request) {
+    CallTarget t; MappedError e;
+    LOGOS_ASSERT_FALSE(alias(R"({"jsonrpc":"2.0","method":"m.get"})", &t, &e));
+    LOGOS_ASSERT_EQ(e.jsonRpcCode, static_cast<int>(kInvalidRequest));
+    LOGOS_ASSERT_EQ(e.message, std::string(kCallNotificationRefused));
+    MappedError other;
+    LOGOS_ASSERT_FALSE(alias(R"({"jsonrpc":"2.0","method":"not_exposed.get"})", &t, &other));
+    LOGOS_ASSERT_EQ(other.toJson().dump(), e.toJson().dump());
+}
+
+// `id: null` is a request, not a notification, for aliases too.
+LOGOS_TEST(an_alias_with_a_null_id_is_a_request) {
+    CallTarget t; MappedError e;
+    LOGOS_ASSERT_TRUE(alias(R"({"jsonrpc":"2.0","id":null,"method":"m.get"})", &t, &e));
 }

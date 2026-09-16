@@ -153,7 +153,7 @@ inline std::chrono::milliseconds retryDelay(int failures) {
 inline bool methodPermitted(const BridgeConfig& cfg, const ModuleView& view,
                             const std::string& method) {
     const ExposedModule* em = cfg.find(view.module);
-    if (!em || !em->methods.permits(method)) return false;
+    if (!em || !em->methodAllowed(method)) return false;   // built-ins bypass policy, not existence
     // Unresolved is not a refusal: "starting" must not look like "forbidden",
     // and the upstream call answers authoritatively.
     if (!view.resolved() || view.live.methods.empty()) return true;
@@ -203,7 +203,7 @@ inline bool toPositional(const ModuleView& view, const std::string& method,
 inline nlohmann::json describeView(const ExposedModule& em, const ModuleView& view) {
     nlohmann::json methods = nlohmann::json::array();
     for (const auto& m : view.live.methods)
-        if (em.methods.permits(m.name)) methods.push_back(m.name);
+        if (em.methodAllowed(m.name)) methods.push_back(m.name);
     nlohmann::json events = nlohmann::json::array();
     for (const auto& e : view.live.events)
         if (em.events.permits(e.name)) events.push_back(e.name);

@@ -53,10 +53,21 @@ struct NamePolicy {
     }
 };
 
+// Introspection built-ins: callable on every exposed module whatever the
+// method policy. Policy restricts calls, not knowledge.
+inline bool isBuiltinMethod(const std::string& name) {
+    return name == "lidl" || name == "name" || name == "version";
+}
+
 struct ExposedModule {
     std::string name;
     NamePolicy methods;
     NamePolicy events;
+
+    // The method policy with the built-ins implicitly allowed.
+    bool methodAllowed(const std::string& method) const {
+        return isBuiltinMethod(method) || methods.permits(method);
+    }
 };
 
 struct Limits {
@@ -143,6 +154,28 @@ inline bool readPolicy(const nlohmann::json& j, NamePolicy* out, std::string* er
                 *err = where + ".deny contains a duplicate: " + e.get<std::string>();
                 return false;
             }
+        }
+    }
+    return true;
+}
+
+// Module names are alias prefixes ("<module>.<method>") and path segments.
+inline bool checkModuleName(const std::string& name, std::string* err) {
+    const std::string quoted = nlohmann::json(name).dump();
+    if (name == "rpc") {
+        *err = "expose.modules must not contain \"rpc\": rpc.* names bridge operations";
+        return false;
+    }
+    for (unsigned char c : name) {
+        if (c == '.') {
+            *err = "expose.modules name " + quoted +
+                   " contains '.', which separates module from method in an alias";
+            return false;
+        }
+        if (c == ' ' || c < 0x20 || c == 0x7f) {
+            *err = "expose.modules name " + quoted +
+                   " contains whitespace or a control character";
+            return false;
         }
     }
     return true;
@@ -255,9 +288,17 @@ inline ConfigParseResult parseBridgeConfig(const std::string& configJson,
         }
 
         if (em.name.empty()) { r.error = "expose.modules contains an empty name"; return r; }
+        if (!detail::checkModuleName(em.name, &r.error)) return r;
         if (!selfModuleName.empty() && em.name == selfModuleName) {
             r.error = "expose.modules must not contain this module itself (\"" +
                       selfModuleName + "\") -- bridging the bridge recurses";
+            return r;
+        }
+        for (const char* builtin : {"lidl", "name", "version"}) {
+            if (!em.methods.deny.count(builtin)) continue;
+            r.error = "expose.modules[" + em.name + "].methods.deny must not name '" +
+                      builtin + "': lidl, name and version are introspection built-ins, "
+                      "callable on every exposed module (an allow list need not name them)";
             return r;
         }
         for (const auto& seen : c.modules) {

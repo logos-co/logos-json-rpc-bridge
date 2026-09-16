@@ -100,6 +100,63 @@ LOGOS_TEST(exposing_self_is_refused) {
     LOGOS_ASSERT_CONTAINS(r.error, "recurses");
 }
 
+// rpc.* is the bridge's namespace; a module named rpc could never be aliased.
+LOGOS_TEST(a_module_named_rpc_is_refused) {
+    auto bare = parse(R"({"expose":{"modules":["rpc"]}})");
+    LOGOS_ASSERT_FALSE(bare.ok);
+    LOGOS_ASSERT_CONTAINS(bare.error, "rpc");
+    LOGOS_ASSERT_FALSE(parse(R"({"expose":{"modules":[{"name":"rpc"}]}})").ok);
+    LOGOS_ASSERT_TRUE(parse(R"({"expose":{"modules":["rpc_module"]}})").ok);
+}
+
+// A '.' would make "<module>.<method>" ambiguous; whitespace and control
+// characters have no business in a name that is also a path segment.
+LOGOS_TEST(module_names_with_dots_whitespace_or_control_characters_are_refused) {
+    for (const char* name : {"a.b", ".a", "a.", "a b", " a", "a\\tb", "a\\nb",
+                             "a\\u0001", "a\\u007f"}) {
+        const std::string j = std::string(R"({"expose":{"modules":[")") + name + R"("]}})";
+        auto r = parse(j);
+        LOGOS_ASSERT_FALSE(r.ok);
+    }
+    auto dotted = parse(R"({"expose":{"modules":["storage.module"]}})");
+    LOGOS_ASSERT_CONTAINS(dotted.error, "'.'");
+}
+
+LOGOS_TEST(non_ascii_module_names_are_accepted) {
+    LOGOS_ASSERT_TRUE(parse(R"({"expose":{"modules":["m\u00f3dulo","m_1-x"]}})").ok);
+}
+
+// Policy restricts calls, not knowledge: the built-ins cannot be denied.
+LOGOS_TEST(denying_a_built_in_method_is_refused) {
+    for (const char* b : {"lidl", "name", "version"}) {
+        const std::string j = std::string(R"({"expose":{"modules":[{"name":"m1",)") +
+                              R"("methods":{"deny":[")" + b + R"("]}}]}})";
+        auto r = parse(j);
+        LOGOS_ASSERT_FALSE(r.ok);
+        LOGOS_ASSERT_CONTAINS(r.error, "built-ins");
+        LOGOS_ASSERT_CONTAINS(r.error, b);
+    }
+}
+
+// An allow list need not name them: they are implicitly allowed.
+LOGOS_TEST(an_allow_list_leaves_the_built_ins_callable) {
+    auto r = parse(R"({"expose":{"modules":[{"name":"m1","methods":{"allow":["get"]}}]}})");
+    LOGOS_ASSERT_TRUE(r.ok);
+    const ExposedModule* m = r.config.find("m1");
+    for (const char* b : {"lidl", "name", "version"}) {
+        LOGOS_ASSERT_FALSE(m->methods.permits(b));
+        LOGOS_ASSERT_TRUE(m->methodAllowed(b));
+    }
+    LOGOS_ASSERT_TRUE(m->methodAllowed("get"));
+    LOGOS_ASSERT_FALSE(m->methodAllowed("other"));
+}
+
+// The rule is about methods; an event that happens to be called "version" is not special.
+LOGOS_TEST(an_event_policy_may_name_a_built_in) {
+    LOGOS_ASSERT_TRUE(
+        parse(R"({"expose":{"modules":[{"name":"m1","events":{"deny":["version"]}}]}})").ok);
+}
+
 LOGOS_TEST(duplicate_module_is_refused) {
     auto r = parse(R"({"expose":{"modules":["m1","m1"]}})");
     LOGOS_ASSERT_FALSE(r.ok);

@@ -173,6 +173,20 @@ LOGOS_TEST(tagged_events_are_checked_and_untagged_ones_defer_to_policy) {
     LOGOS_ASSERT_FALSE(eventPermitted(cfg, legacy, "other"));
 }
 
+// Contract 5: lidl/name/version bypass the policy, but must still exist live.
+LOGOS_TEST(built_ins_bypass_the_method_policy_but_not_the_live_check) {
+    const BridgeConfig cfg =
+        config(R"({"expose":{"modules":[{"name":"m1","methods":{"allow":["greet"]}}]}})");
+    LOGOS_ASSERT_TRUE(methodPermitted(cfg, pendingView("m1"), "lidl"));
+    LOGOS_ASSERT_FALSE(methodPermitted(cfg, pendingView("m1"), "add"));
+    const ModuleView v = resolved("m1", kProviderIface);
+    LOGOS_ASSERT_TRUE(methodPermitted(cfg, v, "version"));
+    LOGOS_ASSERT_FALSE(methodPermitted(cfg, v, "lidl"));   // not listed by this module
+    LOGOS_ASSERT_FALSE(methodPermitted(cfg, v, "add"));
+    const nlohmann::json d = describeView(*cfg.find("m1"), v);
+    LOGOS_ASSERT_EQ(d["methods"].dump(), std::string(R"(["greet","version"])"));
+}
+
 // ── by-name params ──────────────────────────────────────────────────────────
 
 LOGOS_TEST(by_name_params_follow_the_live_order_and_fill_gaps_with_null) {

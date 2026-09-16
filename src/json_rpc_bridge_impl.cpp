@@ -86,6 +86,8 @@ private:
     void onBody(std::shared_ptr<Conn> conn, std::string body, bool isWebsocket);
     void handleOne(const std::shared_ptr<Conn>& conn, const nlohmann::json& raw,
                    const std::shared_ptr<class Batch>& batch, std::size_t slot);
+    void dispatchCall(const nlohmann::json& id, const CallTarget& t,
+                      const std::shared_ptr<class Batch>& batch, std::size_t slot);
     void onEvent(const Delivery& d);
     void onSubscriptionLost(std::uint64_t subscriberId, const std::string& module,
                             const std::string& event);
@@ -401,12 +403,19 @@ void BridgeCore::handleOne(const std::shared_ptr<Conn>& conn, const nlohmann::js
     MappedError err;
     if (!parseRequest(raw, &req, &err)) { batch->fill(slot, makeError(nlohmann::json(), err)); return; }
 
+    // "<module>.<method>" is exactly rpc.call, refusals included.
+    if (!isBridgeOp(req.method)) {
+        CallTarget t;
+        if (!parseAliasCall(req, &t, &err)) { batch->fill(slot, makeError(req.id, err)); return; }
+        dispatchCall(req.id, t, batch, slot);
+        return;
+    }
+
     // No notification concept exists upstream -- every call gets exactly one
     // reply -- so a fire-and-forget module call would silently discard errors.
     if (req.isNotification && req.method == op::kCall) {
         batch->fill(slot, makeError(nlohmann::json(),
-            {kInvalidRequest, LogosErrorCode::InvalidParams,
-             "notifications are not accepted for rpc.call: every module call has a reply"}));
+            {kInvalidRequest, LogosErrorCode::InvalidParams, kCallNotificationRefused}));
         return;
     }
     const nlohmann::json id = req.id;
@@ -429,41 +438,7 @@ void BridgeCore::handleOne(const std::shared_ptr<Conn>& conn, const nlohmann::js
     if (req.method == op::kCall) {
         CallTarget t;
         if (!parseCallTarget(req.params, &t, &err)) { batch->fill(slot, makeError(id, err)); return; }
-        if (!m_discovery.methodPermitted(t.module, t.method)) {
-            batch->fill(slot, makeError(id, notFound()));
-            return;
-        }
-        nlohmann::json args = t.params;
-        if (args.is_object()) {
-            std::string badPath;
-            nlohmann::json positional;
-            if (!m_discovery.toPositional(t.module, t.method, args, &positional, &badPath)) {
-                batch->fill(slot, makeErrorRaw(id, invalidParamsJson("schema-mismatch", badPath)));
-                return;
-            }
-            args = std::move(positional);
-        }
-        const int timeout = m_cfg.limits.callTimeoutMs;
-        auto client = m_clients.get(t.module);
-        if (!client) { batch->fill(slot, makeError(id, notFound())); return; }
-        Discovery* discovery = &m_discovery;
-        const bool queued = m_pump.submit([client, t, args, id, batch, slot, timeout, discovery] {
-            client->invokeAsyncResult(t.method, args,
-                [batch, slot, id, discovery, module = t.module](nlohmann::json value,
-                                                                const logos::CallError& e) {
-                    if (!e.ok()) {
-                        if (e.code == "object_unavailable") discovery->onCallUnavailable(module);
-                        batch->fill(slot, makeError(id, mapCallError(e.code, e.message)));
-                        return;
-                    }
-                    // An application-level failure is a SUCCESSFUL call: the
-                    // payload goes in `result` untouched, never promoted to an
-                    // error. See error_map.h.
-                    batch->fill(slot, makeResult(id, std::move(value)));
-                }, timeout);
-        });
-        if (!queued)
-            batch->fill(slot, makeError(id, {kShuttingDown, LogosErrorCode::NotReady, "shutting down"}));
+        dispatchCall(id, t, batch, slot);
         return;
     }
 
@@ -554,6 +529,47 @@ void BridgeCore::handleOne(const std::shared_ptr<Conn>& conn, const nlohmann::js
     }
 
     batch->fill(slot, makeError(id, notFound()));
+}
+
+// The one module-call path, shared by rpc.call and the "<module>.<method>" alias,
+// so both entry points refuse with the same bytes.
+void BridgeCore::dispatchCall(const nlohmann::json& id, const CallTarget& t,
+                              const std::shared_ptr<Batch>& batch, std::size_t slot) {
+    if (!m_discovery.methodPermitted(t.module, t.method)) {
+        batch->fill(slot, makeError(id, notFound()));
+        return;
+    }
+    nlohmann::json args = t.params;
+    if (args.is_object()) {
+        std::string badPath;
+        nlohmann::json positional;
+        if (!m_discovery.toPositional(t.module, t.method, args, &positional, &badPath)) {
+            batch->fill(slot, makeErrorRaw(id, invalidParamsJson("schema-mismatch", badPath)));
+            return;
+        }
+        args = std::move(positional);
+    }
+    const int timeout = m_cfg.limits.callTimeoutMs;
+    auto client = m_clients.get(t.module);
+    if (!client) { batch->fill(slot, makeError(id, notFound())); return; }
+    Discovery* discovery = &m_discovery;
+    const bool queued = m_pump.submit([client, t, args, id, batch, slot, timeout, discovery] {
+        client->invokeAsyncResult(t.method, args,
+            [batch, slot, id, discovery, module = t.module](nlohmann::json value,
+                                                            const logos::CallError& e) {
+                if (!e.ok()) {
+                    if (e.code == "object_unavailable") discovery->onCallUnavailable(module);
+                    batch->fill(slot, makeError(id, mapCallError(e.code, e.message)));
+                    return;
+                }
+                // An application-level failure is a SUCCESSFUL call: the
+                // payload goes in `result` untouched, never promoted to an
+                // error. See error_map.h.
+                batch->fill(slot, makeResult(id, std::move(value)));
+            }, timeout);
+    });
+    if (!queued)
+        batch->fill(slot, makeError(id, {kShuttingDown, LogosErrorCode::NotReady, "shutting down"}));
 }
 
 nlohmann::json BridgeCore::info() const {
