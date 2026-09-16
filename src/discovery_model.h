@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <memory>
 #include <string>
 #include <vector>
@@ -14,7 +15,9 @@
 #include <nlohmann/json.hpp>
 
 #include "bridge_config.h"
+#include "exposure.h"
 #include "lidl_contract.h"
+#include "sha256.h"
 
 namespace bridge {
 
@@ -164,12 +167,30 @@ inline std::string contractErrorText(const ContractResult& c, const std::string&
     return where + c.error + " (lidl reader " + readerRev + ")";
 }
 
+// ---------------------------------------------------------------------------
+// Digests
+// ---------------------------------------------------------------------------
+
+// nlohmann's default dump: sorted keys, no spaces, raw UTF-8. Equals Python's
+// json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False).
+inline std::string canonicalJson(const nlohmann::json& doc) {
+    return doc.dump();
+}
+
+// interface_sha256: lowercase hex SHA-256 of the canonical JSON.
+inline std::string interfaceDigest(const nlohmann::json& doc) {
+    return sha256Hex(canonicalJson(doc));
+}
+
 // A contract the bridge serves and dispatches by. Immutable once built.
 struct TypedContract {
     std::string version;
     std::vector<ContractMethod> methods;
     std::vector<ContractEvent> events;
-    nlohmann::json interface;   // the full AST, never filtered by policy
+    std::vector<std::string> warnings;   // reader codes, e.g. "non_canonical"
+    std::vector<std::string> lint;       // validator warnings
+    nlohmann::json interface;            // the full AST, never filtered by policy
+    std::string interfaceSha256;         // independent of policy
 
     const ContractMethod* method(const std::string& name) const {
         for (const auto& m : methods)
@@ -183,15 +204,190 @@ struct TypedContract {
     }
 };
 
-// Null when the reader's JSON does not parse back (it always should).
+// Null when the reader's JSON does not parse back or cannot be digested.
 inline std::shared_ptr<const TypedContract> typedContract(const ContractResult& c) {
     auto t = std::make_shared<TypedContract>();
     t->interface = nlohmann::json::parse(c.astJson, nullptr, /*allow_exceptions=*/false);
     if (t->interface.is_discarded() || !t->interface.is_object()) return nullptr;
+    try {
+        t->interfaceSha256 = interfaceDigest(t->interface);
+    } catch (const std::exception&) {
+        return nullptr;
+    }
     t->version = c.contractVersion;
     t->methods = c.methods;
     t->events = c.events;
+    t->warnings = c.warnings;
+    t->lint = c.lint;
     return t;
+}
+
+// ---------------------------------------------------------------------------
+// Cross-check: the contract against the live report, names and arity only
+// ---------------------------------------------------------------------------
+
+// Live type spellings are host names (QString, ...), so types are not compared.
+struct Finding {
+    std::string severity;   // error | warning | info
+    std::string code;       // stable, see crossCheck()
+    std::string member;     // empty when not about one member
+    std::string detail;
+
+    nlohmann::json toJson() const {
+        nlohmann::json j{{"severity", severity}, {"code", code}, {"detail", detail}};
+        if (!member.empty()) j["member"] = member;
+        return j;
+    }
+};
+
+struct CrossCheck {
+    std::vector<Finding> findings;
+
+    bool has(const char* severity) const {
+        for (const auto& f : findings)
+            if (f.severity == severity) return true;
+        return false;
+    }
+    bool hasErrors() const { return has("error"); }
+    const char* state() const {
+        return hasErrors() ? "inconsistent" : has("warning") ? "warnings" : "consistent";
+    }
+    nlohmann::json toJson() const {
+        nlohmann::json list = nlohmann::json::array();
+        for (const auto& f : findings) list.push_back(f.toJson());
+        return nlohmann::json{{"state", state()}, {"findings", std::move(list)}};
+    }
+};
+
+// What `version()` answered; unknown when the call failed or was not a string.
+struct RuntimeVersion {
+    bool known = false;
+    std::string value;
+};
+
+inline RuntimeVersion runtimeVersion(bool callOk, const nlohmann::json& value) {
+    RuntimeVersion v;
+    if (callOk && value.is_string()) {
+        v.known = true;
+        v.value = value.get<std::string>();
+    }
+    return v;
+}
+
+namespace detail {
+
+inline std::string namesOf(const std::vector<std::string>& names) {
+    std::string out = "(";
+    for (std::size_t i = 0; i < names.size(); ++i) out += (i ? ", " : "") + names[i];
+    return out + ")";
+}
+
+inline std::vector<std::string> paramNames(const std::vector<ContractParam>& params) {
+    std::vector<std::string> out;
+    for (const auto& p : params) out.push_back(p.name);
+    return out;
+}
+
+// Declared member vs every live entry of that name (Qt clones repeat a name).
+// Arity must match one entry; names are compared where the host gave them.
+inline void checkMember(const char* kind, const std::string& name,
+                        const std::vector<ContractParam>& declared,
+                        const std::vector<const LiveMember*>& live, CrossCheck* out) {
+    const LiveMember* sameArity = nullptr;
+    std::string arities;
+    for (const LiveMember* m : live) {
+        if (m->params.size() == declared.size() && !sameArity) sameArity = m;
+        arities += (arities.empty() ? "" : "/") + std::to_string(m->params.size());
+    }
+    const std::vector<std::string> names = paramNames(declared);
+    if (!sameArity) {
+        out->findings.push_back({"error", std::string(kind) + "_arity_mismatch", name,
+            "declared " + std::to_string(declared.size()) + " parameter(s), live " + arities});
+        return;
+    }
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        if (sameArity->params[i].empty() || sameArity->params[i] == names[i]) continue;
+        out->findings.push_back({"warning", "param_names_differ", name,
+            "declared " + namesOf(names) + ", live " + namesOf(sameArity->params)});
+        return;
+    }
+}
+
+inline std::vector<const LiveMember*> liveEntries(const std::vector<LiveMember>& live,
+                                                  const std::string& name) {
+    std::vector<const LiveMember*> out;
+    for (const auto& m : live)
+        if (m.name == name) out.push_back(&m);
+    return out;
+}
+
+} // namespace detail
+
+// Errors (*_missing, *_arity_mismatch) make the module invalid; warnings and
+// info keep it ok. The codes are part of the served view: keep them stable.
+inline CrossCheck crossCheck(const TypedContract& c, const LiveReport& live,
+                             const RuntimeVersion& runtime) {
+    CrossCheck out;
+    for (const auto& m : c.methods) {
+        const auto entries = detail::liveEntries(live.methods, m.name);
+        if (entries.empty()) {
+            // ModuleProxy and the Qt glue answer name/version without always listing them;
+            // lidl is listed, or discovery would not have asked for it.
+            if (m.derived)
+                out.findings.push_back({"info", "derived_method_unlisted", m.name,
+                                        "answered by the host, not listed live"});
+            else
+                out.findings.push_back({"error", "declared_method_missing", m.name,
+                                        "declared, but not in the live interface"});
+            continue;
+        }
+        detail::checkMember("method", m.name, m.params, entries, &out);
+    }
+    std::vector<std::string> undeclared;
+    for (const auto& m : live.methods) {
+        if (c.method(m.name) || isReservedIntrospection(m.name)) continue;
+        if (std::find(undeclared.begin(), undeclared.end(), m.name) != undeclared.end()) continue;
+        undeclared.push_back(m.name);
+        out.findings.push_back({"warning", "undeclared_method", m.name,
+                                "live, but not declared"});
+    }
+
+    if (live.eventsDeclared) {
+        for (const auto& e : c.events) {
+            const auto entries = detail::liveEntries(live.events, e.name);
+            if (entries.empty())
+                out.findings.push_back({"error", "declared_event_missing", e.name,
+                                        "declared, but not in the live interface"});
+            else
+                detail::checkMember("event", e.name, e.params, entries, &out);
+        }
+        for (const auto& e : live.events) {
+            if (c.declaresEvent(e.name)) continue;
+            out.findings.push_back({"warning", "undeclared_event", e.name,
+                                    "live, but not declared"});
+        }
+    } else if (!c.events.empty()) {
+        out.findings.push_back({"info", "events_untagged", "",
+                                "the live interface tags no events, so they were not checked"});
+    }
+
+    for (const auto& w : c.warnings) {
+        if (w == "non_canonical")
+            out.findings.push_back({"warning", "non_canonical", "",
+                                    "lidl() is not in the canonical form this reader writes"});
+        else
+            out.findings.push_back({"warning", w, "", ""});
+    }
+    for (const auto& l : c.lint)
+        out.findings.push_back({"warning", "contract_lint", "", l});
+
+    if (!runtime.known)
+        out.findings.push_back({"info", "runtime_version_unavailable", "version",
+                                "version() did not answer with a string"});
+    else if (!c.version.empty() && runtime.value != c.version)
+        out.findings.push_back({"warning", "version_mismatch", "version",
+                                "contract " + c.version + ", runtime " + runtime.value});
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +403,11 @@ struct ModuleView {
     bool stale = false;              // the provider went away since; a refresh is due
     std::string interfaceError;      // invalid only
     std::shared_ptr<const TypedContract> contract;   // ok only
+    std::string contractSha256;      // SHA-256 of the exact lidl() bytes, when they were read
+    std::string interfaceSha256;     // of the served interface; ok only
+    bool crossChecked = false;
+    CrossCheck crossCheck;           // kept on an inconsistent (invalid) view too
+    Exposure exposure;               // what this bridge lets clients use
 
     bool resolved() const { return status != InterfaceStatus::Pending; }
     bool typed() const { return status == InterfaceStatus::Ok && contract != nullptr; }
@@ -244,7 +445,25 @@ inline ModuleView invalidView(const ModuleView& prev, LiveReport live, std::stri
 inline ModuleView okView(const ModuleView& prev, LiveReport live,
                          std::shared_ptr<const TypedContract> contract) {
     ModuleView v = nextView(prev, InterfaceStatus::Ok, std::move(live));
+    v.interfaceSha256 = contract->interfaceSha256;
     v.contract = std::move(contract);
+    return v;
+}
+
+constexpr const char* kInconsistentContract =
+    "the contract does not match the running module (see cross_check)";
+
+// A read contract after the cross-check: ok, or invalid when it found errors.
+inline ModuleView checkedView(const ModuleView& prev, LiveReport live,
+                              std::shared_ptr<const TypedContract> contract,
+                              const RuntimeVersion& runtime, const std::string& contractSha256) {
+    CrossCheck cc = crossCheck(*contract, live, runtime);
+    ModuleView v = cc.hasErrors()
+        ? invalidView(prev, std::move(live), kInconsistentContract)
+        : okView(prev, std::move(live), std::move(contract));
+    v.crossChecked = true;
+    v.crossCheck = std::move(cc);
+    v.contractSha256 = contractSha256;
     return v;
 }
 
@@ -254,6 +473,26 @@ inline ModuleView staleView(const ModuleView& prev) {
     ModuleView v = prev;
     v.stale = prev.resolved();
     return v;
+}
+
+// Exposure follows the declarations when typed and the live names otherwise.
+inline Exposure exposureOf(const ExposedModule& em, const ModuleView& view) {
+    if (view.typed()) {
+        std::vector<std::string> methods, events;
+        for (const auto& m : view.contract->methods) methods.push_back(m.name);
+        for (const auto& e : view.contract->events) events.push_back(e.name);
+        return exposeDeclared(em, methods, events);
+    }
+    if (!view.resolved()) return Exposure{};
+    std::vector<std::string> methods, events;
+    for (const auto& m : view.live.methods) methods.push_back(m.name);
+    for (const auto& e : view.live.events) events.push_back(e.name);
+    return exposeLive(em, methods, events, view.live.eventsDeclared);
+}
+
+inline ModuleView withExposure(const ExposedModule& em, ModuleView view) {
+    view.exposure = exposureOf(em, view);
+    return view;
 }
 
 // ---------------------------------------------------------------------------
@@ -273,12 +512,6 @@ inline std::chrono::milliseconds retryDelay(int failures) {
 // ---------------------------------------------------------------------------
 // Gating
 // ---------------------------------------------------------------------------
-
-// ModuleProxy answers these ahead of its gate; lidl() and rpc.schema replace them.
-inline bool isReservedIntrospection(const std::string& method) {
-    return method == "getPluginInterface" || method == "getPluginMethods" ||
-           method == "getPluginEvents";
-}
 
 // Is (module, method) callable by an external client? One boolean on purpose:
 // not exposed, denied and unknown must be indistinguishable from outside.
@@ -389,7 +622,13 @@ inline nlohmann::json describeView(const ExposedModule& em, const ModuleView& vi
         {"authoritative", false},
         {"interface_status", interfaceStatusName(view.status)},
         {"stale", view.stale},
+        {"exposure", view.exposure.toJson()},
+        {"interface_sha256", nullptr},
+        {"contract_sha256", nullptr},
+        {"cross_check", view.crossChecked ? view.crossCheck.toJson() : nlohmann::json()},
     };
+    if (!view.interfaceSha256.empty()) d["interface_sha256"] = view.interfaceSha256;
+    if (!view.contractSha256.empty()) d["contract_sha256"] = view.contractSha256;
     if (withInterface && view.typed()) d["interface"] = view.contract->interface;
     if (view.status == InterfaceStatus::Invalid) d["interface_error"] = view.interfaceError;
     return d;

@@ -251,10 +251,12 @@ CallOutcome text(const std::string& s) {
     return CallOutcome{nlohmann::json(s), std::string()};
 }
 
-// Drives m1 through getPluginInterface and lidl.
-void discoverTyped(FakeIo& fake, const CallOutcome& lidlAnswer, const char* iface = kTypedIface) {
+// Drives m1 through getPluginInterface, lidl and (when asked) version.
+void discoverTyped(FakeIo& fake, const CallOutcome& lidlAnswer, const char* iface = kTypedIface,
+                   const CallOutcome& versionAnswer = CallOutcome{nlohmann::json("1.0.0"), ""}) {
     fake.complete("m1", "getPluginInterface", ok(iface));
     fake.complete("m1", "lidl", lidlAnswer);
+    if (fake.pending("m1", "version")) fake.complete("m1", "version", versionAnswer);
 }
 
 } // namespace
@@ -268,6 +270,8 @@ LOGOS_TEST(a_module_with_lidl_becomes_typed) {
     LOGOS_ASSERT_EQ(status(d, "m1"), std::string("pending"));   // lidl() still outstanding
     LOGOS_ASSERT_EQ(fake.pending("m1", "lidl"), static_cast<size_t>(1));
     fake.complete("m1", "lidl", text(kContract));
+    LOGOS_ASSERT_EQ(status(d, "m1"), std::string("pending"));   // version() for the cross-check
+    fake.complete("m1", "version", text("1.0.0"));
     LOGOS_ASSERT_EQ(status(d, "m1"), std::string("ok"));
     const nlohmann::json schema = d.describe("m1");
     LOGOS_ASSERT_EQ(schema["source"].get<std::string>(), std::string("lidl"));
@@ -414,4 +418,114 @@ LOGOS_TEST(reserved_introspection_is_refused_while_pending) {
     d.start();
     discoverTyped(fake, text(kContract));
     LOGOS_ASSERT_FALSE(d.methodPermitted("m1", "getPluginInterface"));
+}
+
+// ── cross-check, digests and exposure through discovery ─────────────────────
+
+LOGOS_TEST(a_typed_view_serves_both_digests_and_a_consistent_check) {
+    const BridgeConfig cfg = config(
+        R"({"expose":{"modules":[{"name":"m1","methods":{"allow":[]}}]}})");
+    FakeIo fake;
+    Discovery d(&cfg, fake.io());
+    d.start();
+    discoverTyped(fake, text(kContract));
+    const nlohmann::json schema = d.describe("m1");
+    LOGOS_ASSERT_EQ(schema["interface_status"].get<std::string>(), std::string("ok"));
+    LOGOS_ASSERT_EQ(schema["contract_sha256"].get<std::string>(), sha256Hex(kContract));
+    LOGOS_ASSERT_EQ(schema["interface_sha256"].get<std::string>(),
+                    sha256Hex(schema["interface"].dump()));
+    LOGOS_ASSERT_EQ(schema["cross_check"]["state"].get<std::string>(), std::string("consistent"));
+    LOGOS_ASSERT_EQ(schema["exposure"]["methods"].dump(),
+                    std::string(R"(["name","version","lidl"])"));
+    LOGOS_ASSERT_EQ(schema["exposure"]["events"].dump(), std::string(R"(["greeted"])"));
+    const nlohmann::json listed = d.listModules()[0];
+    LOGOS_ASSERT_EQ(listed["interface_sha256"], schema["interface_sha256"]);
+    LOGOS_ASSERT_EQ(listed["exposure"], schema["exposure"]);
+}
+
+LOGOS_TEST(an_unanswered_version_is_only_an_info_finding) {
+    const BridgeConfig cfg = config(R"({"expose":{"modules":["m1"]}})");
+    FakeIo fake;
+    Discovery d(&cfg, fake.io());
+    d.start();
+    discoverTyped(fake, text(kContract), kTypedIface, failed("timeout"));
+    LOGOS_ASSERT_EQ(status(d, "m1"), std::string("ok"));
+    const nlohmann::json cc = d.describe("m1")["cross_check"];
+    LOGOS_ASSERT_EQ(cc["state"].get<std::string>(), std::string("consistent"));
+    LOGOS_ASSERT_EQ(cc["findings"][0]["code"].get<std::string>(),
+                    std::string("runtime_version_unavailable"));
+}
+
+LOGOS_TEST(a_version_that_disagrees_is_a_warning) {
+    const BridgeConfig cfg = config(R"({"expose":{"modules":["m1"]}})");
+    FakeIo fake;
+    Discovery d(&cfg, fake.io());
+    d.start();
+    discoverTyped(fake, text(kContract), kTypedIface, text("9.9.9"));
+    LOGOS_ASSERT_EQ(status(d, "m1"), std::string("ok"));
+    LOGOS_ASSERT_EQ(d.describe("m1")["cross_check"]["state"].get<std::string>(),
+                    std::string("warnings"));
+}
+
+// The contract does not describe the running binary: types are not served.
+LOGOS_TEST(a_contract_the_module_does_not_implement_is_invalid_with_findings) {
+    const BridgeConfig cfg = config(R"({"expose":{"modules":["m1"]}})");
+    FakeIo fake;
+    Discovery d(&cfg, fake.io());
+    d.start();
+    discoverTyped(fake, text(kContract),
+                  R"([{"name":"lidl"},{"name":"other"},{"type":"event","name":"greeted"}])");
+    LOGOS_ASSERT_EQ(status(d, "m1"), std::string("invalid"));
+    const nlohmann::json schema = d.describe("m1");
+    LOGOS_ASSERT_EQ(schema["interface_error"].get<std::string>(),
+                    std::string(kInconsistentContract));
+    LOGOS_ASSERT_EQ(schema["cross_check"]["state"].get<std::string>(), std::string("inconsistent"));
+    LOGOS_ASSERT_EQ(schema["contract_sha256"].get<std::string>(), sha256Hex(kContract));
+    LOGOS_ASSERT_TRUE(schema["interface_sha256"].is_null());
+    LOGOS_ASSERT_FALSE(schema.contains("interface"));
+    // Live-name gating and exposure take over.
+    LOGOS_ASSERT_TRUE(d.methodPermitted("m1", "other"));
+    LOGOS_ASSERT_FALSE(d.methodPermitted("m1", "greet"));
+    LOGOS_ASSERT_EQ(schema["exposure"]["methods"].dump(), std::string(R"(["lidl","other"])"));
+    LOGOS_ASSERT_TRUE(fake.timers.empty());
+}
+
+// Bytes were read, so their digest is known even when they do not parse.
+LOGOS_TEST(an_unparseable_contract_still_reports_its_bytes_digest) {
+    const BridgeConfig cfg = config(R"({"expose":{"modules":["m1"]}})");
+    FakeIo fake;
+    Discovery d(&cfg, fake.io());
+    d.start();
+    discoverTyped(fake, text("module m1 {"));
+    const nlohmann::json schema = d.describe("m1");
+    LOGOS_ASSERT_EQ(schema["contract_sha256"].get<std::string>(), sha256Hex("module m1 {"));
+    LOGOS_ASSERT_TRUE(schema["cross_check"].is_null());
+    LOGOS_ASSERT_TRUE(fake.calls.empty());   // no version() without a contract
+}
+
+LOGOS_TEST(a_version_answer_after_a_loss_is_dropped) {
+    const BridgeConfig cfg = config(R"({"expose":{"modules":["m1"]}})");
+    FakeIo fake;
+    Discovery d(&cfg, fake.io());
+    d.start();
+    fake.complete("m1", "getPluginInterface", ok(kTypedIface));
+    fake.complete("m1", "lidl", text(kContract));
+    d.onProviderLost("m1");
+    fake.complete("m1", "version", text("1.0.0"));
+    LOGOS_ASSERT_EQ(status(d, "m1"), std::string("pending"));
+}
+
+LOGOS_TEST(an_untyped_view_is_exposed_from_its_live_names) {
+    const BridgeConfig cfg = config(
+        R"({"expose":{"modules":[{"name":"m1","methods":{"deny":["greet"]}}]}})");
+    FakeIo fake;
+    Discovery d(&cfg, fake.io());
+    d.start();
+    fake.complete("m1", "getPluginInterface",
+                  ok(R"([{"name":"greet"},{"name":"get"},{"type":"event","name":"greeted"}])"));
+    const nlohmann::json listed = d.listModules()[0];
+    LOGOS_ASSERT_EQ(listed["exposure"]["methods"].dump(), std::string(R"(["get"])"));
+    LOGOS_ASSERT_EQ(listed["exposure"]["events"].dump(), std::string(R"(["greeted"])"));
+    LOGOS_ASSERT_TRUE(listed["cross_check"].is_null());
+    LOGOS_ASSERT_TRUE(listed["contract_sha256"].is_null());
 }

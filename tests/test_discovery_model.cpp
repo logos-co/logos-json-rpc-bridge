@@ -501,3 +501,243 @@ LOGOS_TEST(invalid_and_untyped_views_carry_no_contract) {
     LOGOS_ASSERT_FALSE(plain.contains("interface"));
     LOGOS_ASSERT_FALSE(plain.contains("interface_error"));
 }
+
+// ── cross-check ─────────────────────────────────────────────────────────────
+
+namespace {
+
+// greet(who), notify(), the built-ins; events greeted(who), idle().
+std::shared_ptr<TypedContract> checkedContract() {
+    auto c = std::make_shared<TypedContract>();
+    c->version = "1.0.0";
+    c->methods = {{"greet", false, {{"who", false}}}, {"notify", false, {}},
+                  {"name", true, {}}, {"version", true, {}}, {"lidl", true, {}}};
+    c->events = {{"greeted", {{"who", false}}}, {"idle", {}}};
+    c->interface = nlohmann::json::object();
+    c->interfaceSha256 = interfaceDigest(c->interface);
+    return c;
+}
+
+const char* kMatchingIface = R"json([
+  {"name":"greet","parameters":[{"name":"who"}]},{"name":"notify"},
+  {"name":"name"},{"name":"version"},{"name":"lidl"},
+  {"type":"event","name":"greeted","parameters":[{"name":"who"}]},
+  {"type":"event","name":"idle"}
+])json";
+
+RuntimeVersion runtime(const std::string& v) { return RuntimeVersion{true, v}; }
+
+bool hasFinding(const CrossCheck& cc, const std::string& severity, const std::string& code,
+                const std::string& member = "") {
+    for (const auto& f : cc.findings)
+        if (f.severity == severity && f.code == code && (member.empty() || f.member == member))
+            return true;
+    return false;
+}
+
+std::string describe(const CrossCheck& cc) { return cc.toJson().dump(); }
+
+} // namespace
+
+LOGOS_TEST(a_matching_module_is_consistent) {
+    const CrossCheck cc = crossCheck(*checkedContract(), live(kMatchingIface), runtime("1.0.0"));
+    LOGOS_ASSERT_EQ(std::string(cc.state()), std::string("consistent"));
+    if (!cc.findings.empty()) throw LogosTestFailure("unexpected findings: " + describe(cc));
+}
+
+LOGOS_TEST(a_declared_method_missing_live_is_an_error) {
+    const CrossCheck cc = crossCheck(*checkedContract(),
+        live(R"([{"name":"greet","parameters":[{"name":"who"}]},{"name":"lidl"},)"
+             R"({"type":"event","name":"greeted","parameters":[{"name":"who"}]},)"
+             R"({"type":"event","name":"idle"}])"), runtime("1.0.0"));
+    LOGOS_ASSERT_TRUE(hasFinding(cc, "error", "declared_method_missing", "notify"));
+    LOGOS_ASSERT_EQ(std::string(cc.state()), std::string("inconsistent"));
+    // name/version are answered by the host without being listed: info only.
+    LOGOS_ASSERT_TRUE(hasFinding(cc, "info", "derived_method_unlisted", "name"));
+    LOGOS_ASSERT_TRUE(hasFinding(cc, "info", "derived_method_unlisted", "version"));
+    LOGOS_ASSERT_FALSE(hasFinding(cc, "error", "declared_method_missing", "name"));
+}
+
+LOGOS_TEST(an_arity_mismatch_is_an_error_for_methods_and_events) {
+    const CrossCheck cc = crossCheck(*checkedContract(), live(R"json([
+      {"name":"greet","parameters":[{"name":"who"},{"name":"extra"}]},
+      {"name":"notify","parameters":[{"name":"x"}]},
+      {"name":"name"},{"name":"version"},{"name":"lidl"},
+      {"type":"event","name":"greeted"},{"type":"event","name":"idle"}
+    ])json"), runtime("1.0.0"));
+    LOGOS_ASSERT_TRUE(hasFinding(cc, "error", "method_arity_mismatch", "greet"));
+    LOGOS_ASSERT_TRUE(hasFinding(cc, "error", "method_arity_mismatch", "notify"));
+    LOGOS_ASSERT_TRUE(hasFinding(cc, "error", "event_arity_mismatch", "greeted"));
+    LOGOS_ASSERT_TRUE(cc.hasErrors());
+}
+
+// A Qt default-argument clone lists the same name at several arities.
+LOGOS_TEST(one_matching_arity_among_clones_is_enough) {
+    const CrossCheck cc = crossCheck(*checkedContract(), live(R"json([
+      {"name":"greet","parameters":[{"name":"who"},{"name":"loud"}]},
+      {"name":"greet","parameters":[{"name":"who"}]},
+      {"name":"notify"},{"name":"name"},{"name":"version"},{"name":"lidl"},
+      {"type":"event","name":"greeted","parameters":[{"name":"who"}]},
+      {"type":"event","name":"idle"}
+    ])json"), runtime("1.0.0"));
+    LOGOS_ASSERT_FALSE(cc.hasErrors());
+}
+
+LOGOS_TEST(a_declared_event_missing_live_is_an_error_only_when_events_are_tagged) {
+    const CrossCheck tagged = crossCheck(*checkedContract(), live(R"json([
+      {"name":"greet","parameters":[{"name":"who"}]},{"name":"notify"},
+      {"name":"name"},{"name":"version"},{"name":"lidl"},
+      {"type":"event","name":"greeted","parameters":[{"name":"who"}]}
+    ])json"), runtime("1.0.0"));
+    LOGOS_ASSERT_TRUE(hasFinding(tagged, "error", "declared_event_missing", "idle"));
+
+    const CrossCheck untagged = crossCheck(*checkedContract(), live(R"json([
+      {"name":"greet","parameters":[{"name":"who"}]},{"name":"notify"},
+      {"name":"name"},{"name":"version"},{"name":"lidl"}
+    ])json"), runtime("1.0.0"));
+    LOGOS_ASSERT_FALSE(untagged.hasErrors());
+    LOGOS_ASSERT_TRUE(hasFinding(untagged, "info", "events_untagged"));
+    LOGOS_ASSERT_EQ(std::string(untagged.state()), std::string("consistent"));
+}
+
+LOGOS_TEST(undeclared_live_members_are_warnings_but_host_names_are_not) {
+    const CrossCheck cc = crossCheck(*checkedContract(), live(R"json([
+      {"name":"greet","parameters":[{"name":"who"}]},{"name":"notify"},
+      {"name":"name"},{"name":"version"},{"name":"lidl"},
+      {"name":"debugDump"},{"name":"debugDump","parameters":[{"name":"x"}]},
+      {"name":"getPluginInterface"},
+      {"type":"event","name":"greeted","parameters":[{"name":"who"}]},
+      {"type":"event","name":"idle"},{"type":"event","name":"extraEvent"}
+    ])json"), runtime("1.0.0"));
+    LOGOS_ASSERT_TRUE(hasFinding(cc, "warning", "undeclared_method", "debugDump"));
+    LOGOS_ASSERT_TRUE(hasFinding(cc, "warning", "undeclared_event", "extraEvent"));
+    LOGOS_ASSERT_FALSE(hasFinding(cc, "warning", "undeclared_method", "getPluginInterface"));
+    LOGOS_ASSERT_EQ(std::string(cc.state()), std::string("warnings"));
+    size_t dumps = 0;
+    for (const auto& f : cc.findings) dumps += f.member == "debugDump";
+    LOGOS_ASSERT_EQ(dumps, static_cast<size_t>(1));
+}
+
+// Names are compared where the host gave them; types never are.
+LOGOS_TEST(differing_param_names_are_a_warning) {
+    const CrossCheck cc = crossCheck(*checkedContract(), live(R"json([
+      {"name":"greet","parameters":[{"name":"person","type":"QString"}]},{"name":"notify"},
+      {"name":"name"},{"name":"version"},{"name":"lidl"},
+      {"type":"event","name":"greeted","parameters":[{"type":"int"}]},
+      {"type":"event","name":"idle"}
+    ])json"), runtime("1.0.0"));
+    LOGOS_ASSERT_TRUE(hasFinding(cc, "warning", "param_names_differ", "greet"));
+    LOGOS_ASSERT_FALSE(hasFinding(cc, "warning", "param_names_differ", "greeted"));
+    LOGOS_ASSERT_FALSE(cc.hasErrors());
+}
+
+LOGOS_TEST(reader_warnings_and_lint_are_warnings) {
+    auto c = checkedContract();
+    c->warnings = {"non_canonical"};
+    c->lint = {"Redundant nested optional in x"};
+    const CrossCheck cc = crossCheck(*c, live(kMatchingIface), runtime("1.0.0"));
+    LOGOS_ASSERT_TRUE(hasFinding(cc, "warning", "non_canonical"));
+    LOGOS_ASSERT_TRUE(hasFinding(cc, "warning", "contract_lint"));
+    LOGOS_ASSERT_EQ(std::string(cc.state()), std::string("warnings"));
+}
+
+LOGOS_TEST(the_runtime_version_is_compared_or_reported_unavailable) {
+    const CrossCheck mismatch = crossCheck(*checkedContract(), live(kMatchingIface), runtime("1.1.0"));
+    LOGOS_ASSERT_TRUE(hasFinding(mismatch, "warning", "version_mismatch", "version"));
+    LOGOS_ASSERT_CONTAINS(describe(mismatch), "contract 1.0.0, runtime 1.1.0");
+
+    const CrossCheck unknown = crossCheck(*checkedContract(), live(kMatchingIface), RuntimeVersion{});
+    LOGOS_ASSERT_TRUE(hasFinding(unknown, "info", "runtime_version_unavailable"));
+    LOGOS_ASSERT_EQ(std::string(unknown.state()), std::string("consistent"));
+
+    auto unversioned = checkedContract();
+    unversioned->version.clear();
+    LOGOS_ASSERT_TRUE(crossCheck(*unversioned, live(kMatchingIface), runtime("1.0.0")).findings.empty());
+
+    LOGOS_ASSERT_FALSE(runtimeVersion(false, nlohmann::json("1.0.0")).known);
+    LOGOS_ASSERT_FALSE(runtimeVersion(true, nlohmann::json(1)).known);
+    LOGOS_ASSERT_EQ(runtimeVersion(true, nlohmann::json("2.0")).value, std::string("2.0"));
+}
+
+LOGOS_TEST(findings_serialise_with_stable_keys) {
+    const CrossCheck cc = crossCheck(*checkedContract(), live("[]"), RuntimeVersion{});
+    const nlohmann::json j = cc.toJson();
+    LOGOS_ASSERT_EQ(j["state"].get<std::string>(), std::string("inconsistent"));
+    for (const auto& f : j["findings"]) {
+        LOGOS_ASSERT_TRUE(f.contains("severity"));
+        LOGOS_ASSERT_TRUE(f.contains("code"));
+        LOGOS_ASSERT_TRUE(f.contains("detail"));
+    }
+    Finding general{"info", "events_untagged", "", "x"};
+    LOGOS_ASSERT_FALSE(general.toJson().contains("member"));
+}
+
+// Errors make the module invalid, with the findings kept; otherwise it is ok.
+LOGOS_TEST(the_checked_view_is_ok_or_invalid_by_its_findings) {
+    const ModuleView good = checkedView(pendingView("m1"), live(kMatchingIface),
+                                        checkedContract(), runtime("1.0.0"), "abc123");
+    LOGOS_ASSERT_TRUE(good.typed());
+    LOGOS_ASSERT_TRUE(good.crossChecked);
+    LOGOS_ASSERT_EQ(good.contractSha256, std::string("abc123"));
+    LOGOS_ASSERT_EQ(good.interfaceSha256, checkedContract()->interfaceSha256);
+
+    const ModuleView bad = checkedView(pendingView("m1"), live(R"([{"name":"lidl"}])"),
+                                       checkedContract(), runtime("1.0.0"), "abc123");
+    LOGOS_ASSERT_EQ(std::string(interfaceStatusName(bad.status)), std::string("invalid"));
+    LOGOS_ASSERT_EQ(bad.interfaceError, std::string(kInconsistentContract));
+    LOGOS_ASSERT_TRUE(bad.crossCheck.hasErrors());
+    LOGOS_ASSERT_EQ(bad.contractSha256, std::string("abc123"));
+    LOGOS_ASSERT_TRUE(bad.interfaceSha256.empty());
+    LOGOS_ASSERT_TRUE(bad.contract == nullptr);
+}
+
+// ── views: digests, cross-check, exposure ───────────────────────────────────
+
+LOGOS_TEST(every_view_carries_the_new_keys_in_both_shapes) {
+    const BridgeConfig cfg = config(R"({"expose":{"modules":["m1"]}})");
+    const ExposedModule& em = *cfg.find("m1");
+    const ModuleView states[] = {
+        pendingView("m1"),
+        resolved("m1", kProviderIface),
+        invalidView(pendingView("m1"), live("[]"), "why"),
+        withExposure(em, checkedView(pendingView("m1"), live(kMatchingIface), checkedContract(),
+                                     runtime("1.0.0"), "abc123")),
+    };
+    for (const ModuleView& v : states) {
+        for (const nlohmann::json& d : {describeView(em, v), listView(em, v)}) {
+            for (const char* key : {"exposure", "interface_sha256", "contract_sha256",
+                                    "cross_check", "interface_status", "source"})
+                LOGOS_ASSERT_TRUE(d.contains(key));
+            LOGOS_ASSERT_TRUE(d["exposure"]["methods"].is_array());
+            LOGOS_ASSERT_TRUE(d["exposure"]["events"].is_array());
+        }
+    }
+    const nlohmann::json pending = describeView(em, states[0]);
+    LOGOS_ASSERT_TRUE(pending["interface_sha256"].is_null());
+    LOGOS_ASSERT_TRUE(pending["contract_sha256"].is_null());
+    LOGOS_ASSERT_TRUE(pending["cross_check"].is_null());
+
+    const nlohmann::json ok = describeView(em, states[3]);
+    LOGOS_ASSERT_EQ(ok["contract_sha256"].get<std::string>(), std::string("abc123"));
+    LOGOS_ASSERT_EQ(ok["interface_sha256"].get<std::string>(), sha256Hex("{}"));
+    LOGOS_ASSERT_EQ(ok["cross_check"]["state"].get<std::string>(), std::string("consistent"));
+    LOGOS_ASSERT_EQ(ok["exposure"]["methods"].dump(),
+                    std::string(R"(["greet","notify","name","version","lidl"])"));
+    LOGOS_ASSERT_EQ(listView(em, states[3])["interface_sha256"], ok["interface_sha256"]);
+}
+
+// interface_sha256 is a property of the contract, not of this bridge's policy.
+LOGOS_TEST(the_digests_do_not_depend_on_policy) {
+    const BridgeConfig open = config(R"({"expose":{"modules":["m1"]}})");
+    const BridgeConfig closed = config(
+        R"({"expose":{"modules":[{"name":"m1","methods":{"allow":[]},"events":{"allow":[]}}]}})");
+    const ModuleView v = checkedView(pendingView("m1"), live(kMatchingIface), checkedContract(),
+                                     runtime("1.0.0"), "abc123");
+    const nlohmann::json a = describeView(*open.find("m1"), withExposure(*open.find("m1"), v));
+    const nlohmann::json b = describeView(*closed.find("m1"), withExposure(*closed.find("m1"), v));
+    LOGOS_ASSERT_EQ(a["interface_sha256"], b["interface_sha256"]);
+    LOGOS_ASSERT_EQ(a["contract_sha256"], b["contract_sha256"]);
+    LOGOS_ASSERT_EQ(a["interface"].dump(), b["interface"].dump());
+    LOGOS_ASSERT_TRUE(a["exposure"] != b["exposure"]);
+    LOGOS_ASSERT_EQ(b["exposure"]["methods"].dump(), std::string(R"(["name","version","lidl"])"));
+}

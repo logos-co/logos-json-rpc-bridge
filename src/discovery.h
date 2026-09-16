@@ -1,16 +1,7 @@
 #pragma once
 
-// Discovery IO: fetch each exposed module's interface, retry modules that are
-// not up yet, and rediscover after a provider loss. Every decision is in
-// discovery_model.h; every upstream call goes through DiscoveryIo.
-//
-// Per module: `getPluginInterface` (the live report, which ModuleProxy answers
-// ahead of its authorization gate; LpClient::getMethods() is a stub on
-// qt_remote), then, when the module lists a zero-parameter `lidl`, its
-// canonical contract. Internal calls ignore the exposure policy.
-//
-// Calls are asynchronous and each continuation is posted to the pump, so a
-// module that is down never holds a pump thread for the call timeout.
+// Discovery IO: getPluginInterface, then lidl() and version() when listed, with
+// retry and rediscovery. Decisions live in discovery_model.h.
 
 #include <chrono>
 #include <cstdint>
@@ -26,6 +17,7 @@
 #include "bridge_config.h"
 #include "discovery_model.h"
 #include "lidl_contract.h"
+#include "sha256.h"
 
 namespace bridge {
 
@@ -77,6 +69,7 @@ public:
             s->inFlight = true;
             s->retryArmed = false;
         }
+        // ModuleProxy answers this ahead of its gate; LpClient::getMethods() is a qt_remote stub.
         call(module, attempt, "getPluginInterface",
              [this, module, attempt](CallOutcome r) { onInterface(module, attempt, std::move(r)); });
     }
@@ -188,8 +181,8 @@ private:
         return it != m_slots.end() && it->second.attempt == attempt;
     }
 
-    // Issue one upstream call and resume on the pump. A stale attempt is not
-    // resumed, and a refused post means the bridge is stopping.
+    // Async, resumed on the pump, so a down module never holds a pump thread.
+    // A superseded attempt is not resumed; a refused post means we are stopping.
     void call(const std::string& module, std::uint64_t attempt, const std::string& method,
               std::function<void(CallOutcome)> next) {
         m_io.invoke(module, method, kCallTimeoutMs,
@@ -223,19 +216,25 @@ private:
                     /*retry=*/text.retryable);
             return;
         }
+        const std::string contractSha256 = sha256Hex(text.text);
         const ContractResult contract = readContract(text.text, module);
-        if (!contract.ok) {
-            publish(module, attempt, invalidView(*view(module), std::move(live),
-                                                 contractErrorText(contract, lidlReaderRev())));
-            return;
-        }
-        auto typed = typedContract(contract);
+        std::shared_ptr<const TypedContract> typed;
+        std::string error;
+        if (!contract.ok) error = contractErrorText(contract, lidlReaderRev());
+        else if (!(typed = typedContract(contract))) error = "the contract could not be served";
         if (!typed) {
-            publish(module, attempt, invalidView(*view(module), std::move(live),
-                                                 "the contract could not be served"));
+            ModuleView v = invalidView(*view(module), std::move(live), error);
+            v.contractSha256 = contractSha256;
+            publish(module, attempt, std::move(v));
             return;
         }
-        publish(module, attempt, okView(*view(module), std::move(live), std::move(typed)));
+        // One version() call for the cross-check; a failure is only an info finding.
+        call(module, attempt, "version",
+             [this, module, attempt, live, typed, contractSha256](CallOutcome v) mutable {
+                 publish(module, attempt,
+                         checkedView(*view(module), std::move(live), std::move(typed),
+                                     runtimeVersion(v.ok(), v.value), contractSha256));
+             });
     }
 
     // No live report: keep the view (pending, or stale) and retry with backoff.
@@ -257,6 +256,7 @@ private:
     void publish(const std::string& module, std::uint64_t attempt, ModuleView next,
                  bool retry = false) {
         std::chrono::milliseconds delay{};
+        if (const ExposedModule* em = m_config->find(module)) next = withExposure(*em, std::move(next));
         {
             std::lock_guard<std::mutex> lock(m_mu);
             Slot* s = slot(module);
