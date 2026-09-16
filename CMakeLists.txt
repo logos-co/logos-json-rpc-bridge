@@ -28,6 +28,18 @@ logos_module(
         logos_lidl
 )
 
+# logos-lidl is linked in, not offered: keep its API out of the plugin's exports.
+set_source_files_properties(src/lidl_contract.cpp PROPERTIES
+    COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden")
+if(APPLE)
+    target_link_options(json_rpc_bridge_module_plugin PRIVATE
+        "LINKER:-unexported_symbol,__ZN4lidl*"
+        "LINKER:-unexported_symbol,__ZNK4lidl*")
+elseif(UNIX)
+    target_link_options(json_rpc_bridge_module_plugin PRIVATE
+        "LINKER:--exclude-libs,liblogos_lidl.a:liblogos_lidl_c.a")
+endif()
+
 # getInfo().lidl_reader. The flake exports both; an ad-hoc build reports "unknown".
 target_compile_definitions(json_rpc_bridge_module_plugin PRIVATE
     LOGOS_LIDL_REV="$ENV{LOGOS_LIDL_REV}"
