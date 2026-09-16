@@ -68,7 +68,7 @@ void WsServer::stop() {
     m_ctx = nullptr;
     std::lock_guard<std::mutex> lock(m_connMu);
     m_conns.clear();
-    m_perPeer.clear();
+    m_peerSlots.clear();
 }
 
 void WsServer::send(const std::shared_ptr<Conn>& c, std::string frame) {
@@ -125,7 +125,8 @@ std::shared_ptr<Conn> WsServer::attach(struct lws* wsi, bool isWebsocket) {
     c->peer = peer;
     std::lock_guard<std::mutex> lock(m_connMu);
     m_conns[wsi] = c;
-    ++m_perPeer[c->peer];
+    // Runs per HTTP request; a kept-alive or upgraded wsi keeps its one slot.
+    m_peerSlots.acquire(wsi, c->peer);
     return c;
 }
 
@@ -133,11 +134,10 @@ void WsServer::detach(struct lws* wsi) {
     std::shared_ptr<Conn> c;
     {
         std::lock_guard<std::mutex> lock(m_connMu);
+        m_peerSlots.release(wsi);
         auto it = m_conns.find(wsi);
         if (it == m_conns.end()) return;
         c = it->second;
-        auto p = m_perPeer.find(c->peer);
-        if (p != m_perPeer.end() && --p->second <= 0) m_perPeer.erase(p);
         m_conns.erase(it);
     }
     {
@@ -330,13 +330,15 @@ int WsServer::dispatch(struct lws* wsi, enum lws_callback_reasons reason,
             if (hdr(wsi, WSI_TOKEN_ORIGIN).empty()) return 1;
         }
         std::lock_guard<std::mutex> lock(m_connMu);
-        if (static_cast<int>(m_conns.size()) >= m_cfg.limits.maxConnections) return 1;
+        // A kept-alive socket that upgrades is already in m_conns, so it adds no connection.
+        if (!m_conns.count(wsi) &&
+            static_cast<int>(m_conns.size()) >= m_cfg.limits.maxConnections)
+            return 1;
         char peer[64] = {0};
         lws_get_peer_simple(wsi, peer, sizeof(peer));
-        auto it = m_perPeer.find(peer);
-        if (it != m_perPeer.end() && it->second >= m_cfg.limits.maxConnectionsPerPeer)
-            return 1;
-        return 0;
+        // Likewise, a socket that already holds its slot adds nothing to its peer's count.
+        return (m_peerSlots.holds(wsi) ||
+                m_peerSlots.admits(peer, m_cfg.limits.maxConnectionsPerPeer)) ? 0 : 1;
     }
 
     case LWS_CALLBACK_ESTABLISHED: {
@@ -381,6 +383,12 @@ int WsServer::dispatch(struct lws* wsi, enum lws_callback_reasons reason,
     }
 
     case LWS_CALLBACK_CLOSED:
+        detach(wsi);
+        return 0;
+
+    // Backstop: every wsi gets this, even one whose close skips CLOSED_HTTP, such
+    // as a refused upgrade on a kept-alive socket. detach is idempotent.
+    case LWS_CALLBACK_WSI_DESTROY:
         detach(wsi);
         return 0;
 

@@ -28,6 +28,7 @@
 #include <libwebsockets.h>
 
 #include "bridge_config.h"
+#include "peer_slots.h"
 
 namespace bridge {
 
@@ -132,7 +133,7 @@ private:
 
     mutable std::mutex m_connMu;
     std::map<struct lws*, std::shared_ptr<Conn>> m_conns;
-    std::map<std::string, int> m_perPeer;
+    PeerSlots m_peerSlots;               // one slot per wsi, not per HTTP request
     std::atomic<std::uint64_t> m_nextConnId{1};
 
     // Connections with something to write or a pending close, so the service
