@@ -7,10 +7,12 @@
 
 #include <logos_test.h>
 
+#include <set>
 #include <string>
 #include <vector>
 
 #include "error_map.h"
+#include "rpc_dispatcher.h"
 
 using namespace bridge;
 
@@ -110,4 +112,74 @@ LOGOS_TEST(invalid_params_detail_rides_only_with_invalid_params) {
 
     const auto noPath = invalidParamsJson("malformed-cbor", "");
     LOGOS_ASSERT_FALSE(noPath["data"]["invalid_params_detail"].contains("path"));
+}
+
+// The documents' `errors` must be exactly what the bridge can answer: mapCallError,
+// the dispatcher, and json_rpc_bridge_impl.cpp's shutting-down and overloaded.
+LOGOS_TEST(the_error_catalog_covers_every_code_the_bridge_emits) {
+    std::set<int> produced;
+    for (const std::string& code : kShippedCodes) produced.insert(mapCallError(code, "").jsonRpcCode);
+    produced.insert(mapCallError("something_new", "").jsonRpcCode);
+    produced.insert(notFound().jsonRpcCode);
+    produced.insert(invalidParamsJson("schema-mismatch", "x")["code"].get<int>());
+
+    const auto refusal = [&](bool accepted, const MappedError& e) {
+        LOGOS_ASSERT_FALSE(accepted);
+        produced.insert(e.jsonRpcCode);
+    };
+    const auto parse = [](const char* s) { return nlohmann::json::parse(s); };
+    RpcRequest req;
+    CallTarget call;
+    SubscribeTarget sub;
+    MappedError e;
+    refusal(parseRequest(parse("[]"), &req, &e), e);
+    refusal(parseRequest(parse(R"({"jsonrpc":"2.0","id":1,"method":"rpc.ping","params":3})"), &req, &e), e);
+    refusal(parseCallTarget(parse("[]"), &call, &e), e);
+    refusal(parseSubscribeTarget(parse("{}"), &sub, &e, true), e);
+    std::vector<nlohmann::json> parts;
+    bool single = true;
+    nlohmann::json protocolError;
+    LOGOS_ASSERT_FALSE(splitBody("{oops", &parts, &single, &protocolError));
+    produced.insert(protocolError["error"]["code"].get<int>());
+    LOGOS_ASSERT_FALSE(splitBody("[]", &parts, &single, &protocolError));
+    produced.insert(protocolError["error"]["code"].get<int>());
+    produced.insert(kShuttingDown);
+    produced.insert(kOverloaded);
+
+    std::set<int> listed;
+    for (const CatalogError& entry : errorCatalog()) {
+        LOGOS_ASSERT_TRUE(listed.insert(entry.error.jsonRpcCode).second);  // one entry per code
+    }
+    for (int code : produced) LOGOS_ASSERT_TRUE(listed.count(code) == 1);
+    for (int code : listed) LOGOS_ASSERT_TRUE(produced.count(code) == 1);
+    LOGOS_ASSERT_FALSE(listed.count(kCancelled));  // nothing emits it
+}
+
+LOGOS_TEST(error_catalog_entries_are_error_objects_with_the_logos_taxonomy) {
+    const std::vector<CatalogError> catalog = errorCatalog();
+    LOGOS_ASSERT_EQ(catalog.size(), static_cast<size_t>(12));
+    std::set<std::string> keys;
+    for (const CatalogError& entry : catalog) {
+        const std::string key = entry.key;
+        // Documents reference entries by key, so a key is a stable CamelCase component name.
+        LOGOS_ASSERT_TRUE(keys.insert(key).second);
+        LOGOS_ASSERT_TRUE(!key.empty() && key[0] >= 'A' && key[0] <= 'Z');
+        for (char c : key)
+            LOGOS_ASSERT_TRUE((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'));
+
+        const nlohmann::json j = entry.error.toJson();
+        LOGOS_ASSERT_EQ(j.size(), static_cast<size_t>(3));
+        LOGOS_ASSERT_TRUE(j["code"].is_number_integer());
+        LOGOS_ASSERT_FALSE(j["message"].get<std::string>().empty());
+        const int logosCode = j["data"]["logos_error_code"].get<int>();
+        LOGOS_ASSERT_EQ(j["data"]["logos_error_name"].get<std::string>(),
+                        std::string(logosErrorName(static_cast<LogosErrorCode>(logosCode))));
+    }
+    LOGOS_ASSERT_EQ(std::string(catalog[0].key), std::string("ParseError"));
+    LOGOS_ASSERT_EQ(catalog[0].error.jsonRpcCode, static_cast<int>(kParseError));
+    // The documented not-found answer is byte-identical to the one sent.
+    LOGOS_ASSERT_EQ(std::string(catalog[2].key), std::string("MethodNotFound"));
+    LOGOS_ASSERT_EQ(catalog[2].error.toJson().dump(), notFound().toJson().dump());
+    LOGOS_ASSERT_EQ(std::string(catalog[7].key), std::string("UpstreamTimeout"));
+    LOGOS_ASSERT_EQ(catalog[7].error.jsonRpcCode, static_cast<int>(kTimeout));
 }

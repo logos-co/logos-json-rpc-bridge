@@ -28,6 +28,7 @@
 #include <libwebsockets.h>
 
 #include "bridge_config.h"
+#include "http_body.h"
 #include "peer_slots.h"
 #include "subscription_table.h"
 
@@ -59,6 +60,8 @@ struct Conn {
     std::string httpBody;                // accumulating POST body
     std::string httpRoute;               // path, captured at header time
     int httpStatus = 200;                // status for the queued HTTP response
+    bool httpClose = false;              // the request's body goes unread: close after answering
+    std::unique_ptr<HttpBodyWriter> httpOut;   // the response being written; service thread only
     std::string peer;
 };
 
@@ -125,6 +128,21 @@ private:
 
     void serviceLoop();
     int writeQueued(struct lws* wsi, const std::shared_ptr<Conn>& c);
+    int refuse(struct lws* wsi, unsigned code);
+
+    // A socket closed on unread input would send RST, which can cost the peer the
+    // answer. linger() keeps it open, dropping input, until the peer closes too.
+    void linger(struct lws* wsi);
+    void drainLingering(bool closeAll);
+    static void onLingerTimer(lws_sorted_usec_list_t* sul);
+    struct LingerTimer {
+        lws_sorted_usec_list_t sul;
+        WsServer* owner;
+    };
+    struct Lingering {
+        int fd;
+        lws_usec_t until;
+    };
 
     BridgeConfig m_cfg;
     ServerHooks m_hooks;
@@ -141,6 +159,9 @@ private:
     // thread knows who to poke after a cross-thread wake.
     std::mutex m_wakeMu;
     std::set<struct lws*> m_pending;
+
+    LingerTimer m_lingerTimer{};
+    std::vector<Lingering> m_lingering;  // service thread only
 };
 
 } // namespace bridge

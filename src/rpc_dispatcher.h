@@ -13,11 +13,8 @@
 
 namespace bridge {
 
-// Bridge operations. Module and method are addressed as separate fields inside
-// `params`, never dot-joined into the JSON-RPC method name: that mirrors the
-// transport spec's Request (which keeps target and method distinct), keeps
-// methods symmetric with events, and leaves module names and bridge operations
-// in separate namespaces.
+// Bridge operations own the reserved `rpc.` namespace. Every other method name
+// is a module call alias, "<module>.<method>" (see splitAlias).
 namespace op {
 constexpr const char* kCall        = "rpc.call";
 constexpr const char* kSubscribe   = "rpc.subscribe";
@@ -26,17 +23,29 @@ constexpr const char* kSchema      = "rpc.schema";
 constexpr const char* kListModules = "rpc.list_modules";
 constexpr const char* kCancel      = "rpc.cancel";
 constexpr const char* kPing        = "rpc.ping";
+constexpr const char* kDiscover    = "rpc.discover";   // the OpenRPC document
 constexpr const char* kAuth        = "rpc.authenticate";
 // Server-initiated notifications.
 constexpr const char* kEvent       = "rpc.event";
 constexpr const char* kTerminated  = "rpc.subscription_terminated";
 } // namespace op
 
+// The operations handleOne answers, in the order rpc.discover lists them. Any
+// other rpc.* name is -32601.
+inline const std::vector<std::string>& bridgeOperations() {
+    static const std::vector<std::string> ops = {
+        op::kCall, op::kSubscribe, op::kUnsubscribe, op::kSchema,
+        op::kListModules, op::kPing, op::kCancel, op::kDiscover,
+    };
+    return ops;
+}
+
 struct RpcRequest {
     nlohmann::json id;
     bool isNotification = true;   // the `id` KEY was absent
     std::string method;
     nlohmann::json params;
+    bool hasParams = false;       // the `params` KEY was present
 };
 
 // A module call, after rpc.call's params have been validated.
@@ -60,6 +69,18 @@ inline nlohmann::json makeResult(const nlohmann::json& id, nlohmann::json result
 
 inline nlohmann::json makeNotification(const char* method, nlohmann::json params) {
     return nlohmann::json{{"jsonrpc", "2.0"}, {"method", method}, {"params", std::move(params)}};
+}
+
+// Why a subscription was ended: rpc.subscription_terminated's `reason`.
+namespace reason {
+constexpr const char* kProviderUnavailable = "provider_unavailable";   // the provider went away
+constexpr const char* kProviderChanged     = "provider_changed";       // a different build replaced it
+} // namespace reason
+
+inline nlohmann::json terminationNotice(const nlohmann::json& subscription, const std::string& module,
+                                        const std::string& event, const char* why) {
+    return makeNotification(op::kTerminated, nlohmann::json{
+        {"subscription", subscription}, {"module", module}, {"event", event}, {"reason", why}});
 }
 
 // A notification is the `id` key being ABSENT (JSON-RPC 2.0 section 4).
@@ -86,7 +107,8 @@ inline bool parseRequest(const nlohmann::json& j, RpcRequest* out, MappedError* 
         *err = {kInvalidRequest, LogosErrorCode::InvalidParams, "id must be a string, number or null"};
         return false;
     }
-    out->params = j.contains("params") ? j["params"] : nlohmann::json::object();
+    out->hasParams = j.contains("params");
+    out->params = out->hasParams ? j["params"] : nlohmann::json::object();
     if (!out->params.is_object() && !out->params.is_array()) {
         *err = {kInvalidParams, LogosErrorCode::InvalidParams, "params must be an object or array"};
         return false;
@@ -94,7 +116,41 @@ inline bool parseRequest(const nlohmann::json& j, RpcRequest* out, MappedError* 
     return true;
 }
 
+// The one refusal for a module call sent as a notification, by either entry point.
+constexpr const char* kCallNotificationRefused =
+    "notifications are not accepted for rpc.call: every module call has a reply";
+
+inline bool isBridgeOp(const std::string& method) {
+    return method.rfind("rpc.", 0) == 0;
+}
+
+// "<module>.<method>": split at the first '.', which must sit at 0 < i < len-1.
+// Module names cannot contain '.', so the split is unambiguous.
+inline bool splitAlias(const std::string& name, std::string* module, std::string* method) {
+    const std::size_t i = name.find('.');
+    if (i == std::string::npos || i == 0 || i + 1 >= name.size()) return false;
+    *module = name.substr(0, i);
+    *method = name.substr(i + 1);
+    return true;
+}
+
+// An alias is exactly rpc.call {module, method, params}; absent params mean [].
+// parseRequest has already refused null and scalar params with -32602.
+inline bool parseAliasCall(const RpcRequest& req, CallTarget* out, MappedError* err) {
+    if (!splitAlias(req.method, &out->module, &out->method)) {
+        *err = notFound();
+        return false;
+    }
+    if (req.isNotification) {
+        *err = {kInvalidRequest, LogosErrorCode::InvalidParams, kCallNotificationRefused};
+        return false;
+    }
+    out->params = req.hasParams ? req.params : nlohmann::json::array();
+    return true;
+}
+
 // rpc.call params: {"module": s, "method": s, "params": object|array|absent}.
+// A dotted method here is literal: only the alias entry point splits names.
 inline bool parseCallTarget(const nlohmann::json& p, CallTarget* out, MappedError* err) {
     if (!p.is_object()) {
         *err = {kInvalidParams, LogosErrorCode::InvalidParams,

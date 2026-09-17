@@ -1,0 +1,8 @@
+{
+  "expose": {
+    "modules": [
+      { "name": "storage_module", "methods": { "deny": ["destroy"] } },
+      "legacy_module"
+    ]
+  }
+}

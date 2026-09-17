@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -11,7 +12,10 @@
 
 #include "bridge_config.h"
 #include "discovery.h"
+#include "doc_publisher.h"
 #include "error_map.h"
+#include "lidl_contract.h"
+#include "retry_scheduler.h"
 #include "rpc_dispatcher.h"
 #include "upstream.h"
 #include "ws_server.h"
@@ -49,6 +53,12 @@ constexpr bool kHasSubscriptionContinuity = true;
 constexpr bool kHasSubscriptionContinuity = false;
 #endif
 
+// metadata.json's version, which version() answers too; CMake reads it.
+#ifndef JSON_RPC_BRIDGE_VERSION
+#error "JSON_RPC_BRIDGE_VERSION is not defined; CMakeLists.txt reads it from metadata.json"
+#endif
+constexpr const char* kBridgeVersion = JSON_RPC_BRIDGE_VERSION;
+
 } // namespace
 
 using namespace bridge;
@@ -61,13 +71,29 @@ class BridgeCore {
 public:
     BridgeCore(BridgeConfig cfg, std::string origin)
         : m_cfg(std::move(cfg)),
-          m_clients(std::move(origin)),
-          m_discovery(&m_clients, &m_cfg),
-          m_hub(&m_clients,
+          m_clients(std::make_shared<ClientRegistry>(std::move(origin))),
+          m_discovery(&m_cfg, discoveryIo()),
+          m_docs(docPublisherIo()),
+          m_hub(m_clients.get(),
                 [this](const Delivery& d) { onEvent(d); },
-                [this](std::uint64_t id, const std::string& m, const std::string& e) {
-                    onSubscriptionLost(id, m, e);
-                }) {}
+                [this](std::uint64_t id, const std::string& m, const std::string& e,
+                       const char* why) { onSubscriptionLost(id, m, e, why); }) {
+        m_hub.setModuleStatusHook(
+            [this](const std::string& m, logos::SubStatus s, std::uint64_t generation) {
+                if (s == logos::SubStatus::Armed) m_discovery.onProviderArmed(m, generation);
+                else m_discovery.onProviderLost(m);
+            });
+        m_clients->setPost([this](CallPump::Job job) { return m_pump.submit(std::move(job)); });
+        // On the pump. The old client's reports stop counting before discovery resets its baseline.
+        m_clients->setOnReplaced([this](const std::string& m, std::uint64_t epoch) {
+            std::fprintf(stderr, "json_rpc_bridge: replaced the client for %s (epoch %llu): "
+                                 "calls kept finding it unavailable\n",
+                         m.c_str(), static_cast<unsigned long long>(epoch));
+            m_hub.retire(m, epoch);
+            m_discovery.onClientReplaced(m);
+            m_hub.rebind(m);
+        });
+    }
 
     bool start(std::string* error);
     void shutdown();
@@ -79,17 +105,23 @@ private:
     void onBody(std::shared_ptr<Conn> conn, std::string body, bool isWebsocket);
     void handleOne(const std::shared_ptr<Conn>& conn, const nlohmann::json& raw,
                    const std::shared_ptr<class Batch>& batch, std::size_t slot);
+    void dispatchCall(const nlohmann::json& id, const CallTarget& t,
+                      const std::shared_ptr<class Batch>& batch, std::size_t slot);
     void onEvent(const Delivery& d);
     void onSubscriptionLost(std::uint64_t subscriberId, const std::string& module,
-                            const std::string& event);
+                            const std::string& event, const char* why);
     void abandonSubscribe(const std::shared_ptr<Conn>& conn, const std::string& key,
                           std::uint64_t sid);
     std::string onGet(const std::string& path, int* status);
+    DiscoveryIo discoveryIo();
+    DocPublisher::Io docPublisherIo();
 
     BridgeConfig m_cfg;
-    ClientRegistry m_clients;
+    std::shared_ptr<ClientRegistry> m_clients;   // shared: call completions hold it weakly
     Discovery m_discovery;
+    DocPublisher m_docs;   // before the threads that run its jobs, so it outlives them
     CallPump m_pump;
+    RetryScheduler m_scheduler;
     SubscriptionHub m_hub;
     std::unique_ptr<WsServer> m_server;
 
@@ -173,8 +205,50 @@ private:
 
 // ---------------------------------------------------------------------------
 
+// Discovery's only way upstream. Used after start(), so the members the
+// lambdas reach are all constructed by then.
+DiscoveryIo BridgeCore::discoveryIo() {
+    DiscoveryIo io;
+    io.invoke = [this](const std::string& module, const std::string& method, int timeoutMs,
+                       DiscoveryIo::Done done) {
+        m_clients->invoke(module, method, nlohmann::json::array(),
+            [done](nlohmann::json value, const logos::CallError& e) {
+                if (e.ok()) done(CallOutcome{std::move(value), std::string()});
+                else done(CallOutcome{nlohmann::json(), e.code});
+            }, timeoutMs);
+    };
+    io.post = [this](DiscoveryIo::Job job) { return m_pump.submit(std::move(job)); };
+    io.schedule = [this](const std::string& key, std::chrono::milliseconds delay,
+                         DiscoveryIo::Job job) {
+        return m_scheduler.schedule(key, delay, std::move(job));
+    };
+    io.providerChanged = [this](const std::string& module) {
+        m_hub.notifyModuleLost(module, reason::kProviderChanged);
+    };
+    io.viewChanged = [this](const std::string&) { m_docs.request(); };
+    return io;
+}
+
+// Builds read the views on the pump; the socket thread only swaps in results.
+DocPublisher::Io BridgeCore::docPublisherIo() {
+    DocPublisher::Io io;
+    io.inputs = [this] { return docContext(m_cfg, kBridgeVersion, m_discovery.views()); };
+    io.schedule = [this](const std::string& key, std::chrono::milliseconds delay,
+                         DocPublisher::Job job) {
+        return m_scheduler.schedule(key, delay, std::move(job));
+    };
+    io.post = [this](DocPublisher::Job job) { return m_pump.submit(std::move(job)); };
+    return io;
+}
+
 bool BridgeCore::start(std::string* error) {
+    // Every view is pending yet; requests only ever read a finished snapshot.
+    if (!m_docs.buildNow()) {
+        *error = "could not build the self-description documents";
+        return false;
+    }
     m_pump.start(2);
+    m_scheduler.start();
 
     ServerHooks hooks;
     hooks.onBody = [this](std::shared_ptr<Conn> c, std::string b, bool ws) {
@@ -195,17 +269,12 @@ bool BridgeCore::start(std::string* error) {
     hooks.checkBearer = [](const std::string&) { return false; };
 
     m_server = std::make_unique<WsServer>(m_cfg, std::move(hooks));
-    if (!m_server->start(error)) { m_pump.stop(); return false; }
+    if (!m_server->start(error)) { m_scheduler.stop(); m_pump.stop(); return false; }
 
     m_startedAt = std::chrono::steady_clock::now();
 
-    // Warm every exposed target off the request path. This is also what
-    // populates the interface cache, because the call that fetches it is the
-    // same call that triggers LpClient's lazy (and blocking) create.
-    for (const auto& em : m_cfg.modules) {
-        const std::string name = em.name;
-        m_pump.submit([this, name] { m_discovery.refresh(name); });
-    }
+    // Warm every exposed target off the request path; unresolved ones retry.
+    m_discovery.start();
     return true;
 }
 
@@ -216,8 +285,9 @@ bool BridgeCore::start(std::string* error) {
 // unload grace period makes easy to hit.
 void BridgeCore::shutdown() {
     m_draining.store(true);
+    m_scheduler.stop();   // no further timed rediscoveries
     m_hub.clear();        // no further event deliveries
-    m_clients.close();    // no further completions
+    m_clients->close();   // no further completions, from replaced clients too
     m_pump.stop();        // no further submissions
     if (m_server) { m_server->stop(); m_server.reset(); }  // joins, then destroys the ctx
     std::lock_guard<std::mutex> lock(m_subMu);
@@ -249,7 +319,7 @@ void BridgeCore::onEvent(const Delivery& d) {
 }
 
 void BridgeCore::onSubscriptionLost(std::uint64_t subscriberId, const std::string& module,
-                                    const std::string& event) {
+                                    const std::string& event, const char* why) {
     std::shared_ptr<Conn> conn;
     nlohmann::json clientId;
     {
@@ -270,12 +340,7 @@ void BridgeCore::onSubscriptionLost(std::uint64_t subscriberId, const std::strin
     // Terminate rather than silently resume: a re-established upstream
     // subscription is a NEW one, and the events in between are unrecoverable.
     // The client decides whether to re-subscribe and refetch state.
-    m_server->send(conn, makeNotification(op::kTerminated, nlohmann::json{
-        {"subscription", clientId},
-        {"module", module},
-        {"event", event},
-        {"reason", "provider_unavailable"},
-    }).dump());
+    m_server->send(conn, terminationNotice(clientId, module, event, why).dump());
 }
 
 // Undo a subscribe that never reached the hub. The two locks are taken in turn, never nested.
@@ -300,6 +365,8 @@ std::string BridgeCore::onGet(const std::string& path, int* status) {
         }.dump();
     }
     if (path == "/modules") return m_discovery.listModules().dump();
+    if (path == "/openapi.json") return m_docs.current()->openapi;
+    if (path == "/asyncapi.json") return m_docs.current()->asyncapi;
     const std::string prefix = "/modules/";
     if (path.rfind(prefix, 0) == 0) {
         const std::string name = path.substr(prefix.size());
@@ -373,12 +440,19 @@ void BridgeCore::handleOne(const std::shared_ptr<Conn>& conn, const nlohmann::js
     MappedError err;
     if (!parseRequest(raw, &req, &err)) { batch->fill(slot, makeError(nlohmann::json(), err)); return; }
 
+    // "<module>.<method>" is exactly rpc.call, refusals included.
+    if (!isBridgeOp(req.method)) {
+        CallTarget t;
+        if (!parseAliasCall(req, &t, &err)) { batch->fill(slot, makeError(req.id, err)); return; }
+        dispatchCall(req.id, t, batch, slot);
+        return;
+    }
+
     // No notification concept exists upstream -- every call gets exactly one
     // reply -- so a fire-and-forget module call would silently discard errors.
     if (req.isNotification && req.method == op::kCall) {
         batch->fill(slot, makeError(nlohmann::json(),
-            {kInvalidRequest, LogosErrorCode::InvalidParams,
-             "notifications are not accepted for rpc.call: every module call has a reply"}));
+            {kInvalidRequest, LogosErrorCode::InvalidParams, kCallNotificationRefused}));
         return;
     }
     const nlohmann::json id = req.id;
@@ -398,41 +472,21 @@ void BridgeCore::handleOne(const std::shared_ptr<Conn>& conn, const nlohmann::js
         return;
     }
 
-    if (req.method == op::kCall) {
-        CallTarget t;
-        if (!parseCallTarget(req.params, &t, &err)) { batch->fill(slot, makeError(id, err)); return; }
-        if (!m_discovery.methodPermitted(t.module, t.method)) {
-            batch->fill(slot, makeError(id, notFound()));
-            return;
-        }
-        nlohmann::json args = t.params;
-        if (args.is_object()) {
-            std::string badPath;
-            nlohmann::json positional;
-            if (!m_discovery.toPositional(t.module, t.method, args, &positional, &badPath)) {
-                batch->fill(slot, makeErrorRaw(id, invalidParamsJson("schema-mismatch", badPath)));
-                return;
-            }
-            args = std::move(positional);
-        }
-        const int timeout = m_cfg.limits.callTimeoutMs;
-        auto client = m_clients.get(t.module);
-        if (!client) { batch->fill(slot, makeError(id, notFound())); return; }
-        const bool queued = m_pump.submit([client, t, args, id, batch, slot, timeout] {
-            client->invokeAsyncResult(t.method, args,
-                [batch, slot, id](nlohmann::json value, const logos::CallError& e) {
-                    if (!e.ok()) {
-                        batch->fill(slot, makeError(id, mapCallError(e.code, e.message)));
-                        return;
-                    }
-                    // An application-level failure is a SUCCESSFUL call: the
-                    // payload goes in `result` untouched, never promoted to an
-                    // error. See error_map.h.
-                    batch->fill(slot, makeResult(id, std::move(value)));
-                }, timeout);
+    if (req.method == op::kDiscover) {
+        // The copy and its serialisation are large: the pump does them.
+        const auto docs = m_docs.current();
+        const bool queued = m_pump.submit([docs, id, batch, slot] {
+            batch->fill(slot, makeResult(id, docs->openrpc));
         });
         if (!queued)
             batch->fill(slot, makeError(id, {kShuttingDown, LogosErrorCode::NotReady, "shutting down"}));
+        return;
+    }
+
+    if (req.method == op::kCall) {
+        CallTarget t;
+        if (!parseCallTarget(req.params, &t, &err)) { batch->fill(slot, makeError(id, err)); return; }
+        dispatchCall(id, t, batch, slot);
         return;
     }
 
@@ -525,6 +579,47 @@ void BridgeCore::handleOne(const std::shared_ptr<Conn>& conn, const nlohmann::js
     batch->fill(slot, makeError(id, notFound()));
 }
 
+// The one module-call path, shared by rpc.call and the "<module>.<method>" alias,
+// so both entry points refuse with the same bytes.
+void BridgeCore::dispatchCall(const nlohmann::json& id, const CallTarget& t,
+                              const std::shared_ptr<Batch>& batch, std::size_t slot) {
+    if (!m_discovery.methodPermitted(t.module, t.method)) {
+        batch->fill(slot, makeError(id, notFound()));
+        return;
+    }
+    nlohmann::json args = t.params;
+    if (args.is_object()) {
+        std::string badPath;
+        nlohmann::json positional;
+        if (!m_discovery.toPositional(t.module, t.method, args, &positional, &badPath)) {
+            batch->fill(slot, makeErrorRaw(id, invalidParamsJson("schema-mismatch", badPath)));
+            return;
+        }
+        args = std::move(positional);
+    }
+    const int timeout = m_cfg.limits.callTimeoutMs;
+    if (!m_clients->get(t.module)) { batch->fill(slot, makeError(id, notFound())); return; }
+    Discovery* discovery = &m_discovery;
+    std::shared_ptr<ClientRegistry> clients = m_clients;
+    const bool queued = m_pump.submit([clients, t, args, id, batch, slot, timeout, discovery] {
+        clients->invoke(t.module, t.method, args,
+            [batch, slot, id, discovery, module = t.module](nlohmann::json value,
+                                                            const logos::CallError& e) {
+                if (!e.ok()) {
+                    if (e.code == "object_unavailable") discovery->onCallUnavailable(module);
+                    batch->fill(slot, makeError(id, mapCallError(e.code, e.message)));
+                    return;
+                }
+                // An application-level failure is a SUCCESSFUL call: the
+                // payload goes in `result` untouched, never promoted to an
+                // error. See error_map.h.
+                batch->fill(slot, makeResult(id, std::move(value)));
+            }, timeout);
+    });
+    if (!queued)
+        batch->fill(slot, makeError(id, {kShuttingDown, LogosErrorCode::NotReady, "shutting down"}));
+}
+
 nlohmann::json BridgeCore::info() const {
     nlohmann::json mods = nlohmann::json::array();
     for (const auto& em : m_cfg.modules) {
@@ -538,6 +633,7 @@ nlohmann::json BridgeCore::info() const {
     { std::lock_guard<std::mutex> lock(m_subMu); subs = m_subscribers.size(); }
     return nlohmann::json{
         {"running", m_server != nullptr},
+        {"version", kBridgeVersion},
         {"http", "http://" + m_cfg.host + ":" + std::to_string(m_cfg.port)},
         {"ws", "ws://" + m_cfg.host + ":" + std::to_string(m_cfg.port) + "/ws"},
         {"auth", m_cfg.authMode == AuthMode::Bearer ? "bearer" : "none"},
@@ -545,8 +641,12 @@ nlohmann::json BridgeCore::info() const {
         {"connections", m_server ? m_server->connectionCount() : 0},
         {"subscriptions", subs},
         {"upstream_subscriptions", m_hub.upstreamCount()},
+        {"upstream_clients_replaced", m_clients->replacements()},
         {"protocol_version", LOGOS_PROTOCOL_VERSION_STRING},
         {"subscription_continuity", kHasSubscriptionContinuity},
+        {"lidl_reader", lidlReaderVersion()},
+        {"discovery", {{"revalidate_ms", m_cfg.discovery.revalidateMs}}},
+        {"docs", m_docs.info()},
     };
 }
 
@@ -585,8 +685,10 @@ std::string JsonRpcBridgeImpl::getInfo() {
     if (!m_core) {
         return nlohmann::json{
             {"running", false},
+            {"version", kBridgeVersion},
             {"protocol_version", LOGOS_PROTOCOL_VERSION_STRING},
             {"subscription_continuity", kHasSubscriptionContinuity},
+            {"lidl_reader", lidlReaderVersion()},
         }.dump();
     }
     return m_core->info().dump();

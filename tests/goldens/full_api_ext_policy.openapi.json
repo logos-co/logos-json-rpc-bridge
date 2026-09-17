@@ -1,0 +1,2512 @@
+{
+  "components": {
+    "requestBodies": {
+      "NoParams": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "description": "No parameters: an empty object or an empty array.",
+              "oneOf": [
+                {
+                  "maxProperties": 0,
+                  "type": "object"
+                },
+                {
+                  "maxItems": 0,
+                  "type": "array"
+                }
+              ],
+              "title": "NoParams"
+            }
+          }
+        },
+        "description": "No parameters: send no body, {} or [].",
+        "required": false
+      },
+      "UntypedParams": {
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        },
+        "description": "Untyped: the parameters by name (an object) or by position (an array).",
+        "required": false
+      }
+    },
+    "responses": {
+      "Forbidden": {
+        "content": {
+          "text/html": {
+            "schema": {
+              "type": "string"
+            }
+          }
+        },
+        "description": "Refused before routing: the Host header is not a loopback literal this bridge bound, or the Origin is not in http.allowed_origins."
+      },
+      "LengthRequired": {
+        "content": {
+          "text/html": {
+            "schema": {
+              "type": "string"
+            }
+          }
+        },
+        "description": "The request states no valid Content-Length, or has a Transfer-Encoding: the bridge reads no chunked body. The connection is closed."
+      },
+      "Unauthorized": {
+        "content": {
+          "text/html": {
+            "schema": {
+              "type": "string"
+            }
+          }
+        },
+        "description": "auth.mode is bearer and the request carries no valid `Authorization: Bearer` token."
+      },
+      "UnsupportedMediaType": {
+        "content": {
+          "text/html": {
+            "schema": {
+              "type": "string"
+            }
+          }
+        },
+        "description": "The Content-Type is not application/json, which is required even for an empty body."
+      },
+      "UntypedCallResult": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "result": {}
+                  },
+                  "required": [
+                    "result"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "$ref": "#/components/schemas/ErrorBody"
+                },
+                {
+                  "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                }
+              ]
+            }
+          }
+        },
+        "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+      }
+    },
+    "schemas": {
+      "Bytes": {
+        "additionalProperties": false,
+        "description": "A LIDL bstr: the bytes as base64url without padding (RFC 4648 section 5), carried as the object's only key. Do not name a map key \"_bytes\".",
+        "properties": {
+          "_bytes": {
+            "pattern": "^[A-Za-z0-9_-]*$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "_bytes"
+        ],
+        "title": "Bytes",
+        "type": "object"
+      },
+      "ErrorBody": {
+        "additionalProperties": false,
+        "description": "A module route's refusal: the JSON-RPC error alone. Denied, unexposed and unknown targets all get the same -32601.",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/JsonRpcError"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "ErrorBody",
+        "type": "object"
+      },
+      "JsonRpcError": {
+        "description": "A JSON-RPC 2.0 error object, with the Logos error taxonomy in data.",
+        "properties": {
+          "code": {
+            "type": "integer"
+          },
+          "data": {
+            "properties": {
+              "invalid_params_detail": {
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "description": "schema-mismatch, malformed-cbor or non-deterministic-cbor.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reason"
+                ],
+                "type": "object"
+              },
+              "logos_error_code": {
+                "type": "integer"
+              },
+              "logos_error_name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "logos_error_code",
+              "logos_error_name"
+            ],
+            "type": "object"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "JsonRpcError",
+        "type": "object"
+      },
+      "JsonRpcErrorResponse": {
+        "additionalProperties": false,
+        "description": "A complete JSON-RPC 2.0 error response.",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/JsonRpcError"
+          },
+          "id": {
+            "$ref": "#/components/schemas/JsonRpcId"
+          },
+          "jsonrpc": {
+            "const": "2.0"
+          }
+        },
+        "required": [
+          "jsonrpc",
+          "id",
+          "error"
+        ],
+        "title": "JsonRpcErrorResponse",
+        "type": "object"
+      },
+      "JsonRpcId": {
+        "description": "A JSON-RPC request id; a reply echoes it.",
+        "title": "JsonRpcId",
+        "type": [
+          "string",
+          "number",
+          "null"
+        ]
+      },
+      "LogosResult": {
+        "description": "A LIDL result. A provider that ran and failed answers success=false here: an application failure is a successful call, never a JSON-RPC error.",
+        "properties": {
+          "error": {
+            "description": "The failure message as a string; null when there is none."
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "value": {
+            "description": "The payload; any JSON value, null when absent."
+          }
+        },
+        "required": [
+          "success"
+        ],
+        "title": "LogosResult",
+        "type": "object"
+      },
+      "ProviderRejection": {
+        "additionalProperties": false,
+        "description": "The provider refused the call and said why. It arrives as the call's result, not as a JSON-RPC error.",
+        "properties": {
+          "code": {
+            "description": "Known codes: dispatch_failed (the argument values were refused), invalid_args (wrong argument count), unknown_method (reserved; not emitted yet). Treat any other code as a refusal too.",
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "origin": {
+            "description": "The module that refused.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "origin"
+        ],
+        "title": "ProviderRejection",
+        "type": "object"
+      },
+      "test_fullapi_ext_cpp.Blob": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "n": {
+            "format": "uint64",
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/Bytes"
+          }
+        },
+        "required": [
+          "id",
+          "n",
+          "payload"
+        ],
+        "title": "Blob",
+        "type": "object"
+      },
+      "test_fullapi_ext_cpp.Opt": {
+        "properties": {
+          "blob": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Bytes"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "count": {
+            "anyOf": [
+              {
+                "format": "uint64",
+                "maximum": 18446744073709551615,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maybe": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "required": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "required"
+        ],
+        "title": "Opt",
+        "type": "object"
+      },
+      "test_fullapi_ext_cpp.Wrapper": {
+        "properties": {
+          "blobs": {
+            "items": {
+              "$ref": "#/components/schemas/test_fullapi_ext_cpp.Blob"
+            },
+            "type": "array"
+          },
+          "inner": {
+            "$ref": "#/components/schemas/test_fullapi_ext_cpp.Blob"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "inner",
+          "tags",
+          "blobs"
+        ],
+        "title": "Wrapper",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "The HTTP surface of the Logos JSON-RPC bridge. `POST /modules/<module>/<method>` calls an exposed module method with its parameters as the body, typed from the module's canonical LIDL contract when it has one (x-logos-untyped marks names-only modules). `POST /rpc` speaks JSON-RPC 2.0 (see rpc.discover). Every route checks Host and Origin and sends no CORS headers. A refusal (401, 403, 411, 415) leaves the request body unread, so when the request declares a body the connection closes after the refusal. Operations cover what this bridge lets you call; component schemas cover every record in each contract, and x-logos-modules gives each module's status, digests and exposure.",
+    "title": "Logos JSON-RPC bridge",
+    "version": "0.1.0"
+  },
+  "jsonSchemaDialect": "https://spec.openapis.org/oas/3.1/dialect/base",
+  "openapi": "3.1.1",
+  "paths": {
+    "/asyncapi.json": {
+      "get": {
+        "description": "The AsyncAPI 3.0.0 description of this bridge's WebSocket endpoint.",
+        "operationId": "getAsyncApi",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The AsyncAPI document."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        },
+        "summary": "The WebSocket description.",
+        "tags": [
+          "bridge"
+        ],
+        "x-logos-bridge-op": true
+      }
+    },
+    "/healthz": {
+      "get": {
+        "description": "Liveness and draining state. Gated like every other route.",
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "protocol": {
+                      "const": "json-rpc-2.0"
+                    },
+                    "status": {
+                      "enum": [
+                        "ok",
+                        "draining"
+                      ],
+                      "type": "string"
+                    },
+                    "uptime_seconds": {
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "uptime_seconds",
+                    "protocol"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The bridge is serving."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        },
+        "summary": "Bridge health.",
+        "tags": [
+          "bridge"
+        ],
+        "x-logos-bridge-op": true
+      }
+    },
+    "/modules": {
+      "get": {
+        "description": "The rpc.list_modules views, in configuration order, without `interface`.",
+        "operationId": "listModules",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "description": "The bridge's view of one module, without `interface`.",
+                    "properties": {
+                      "authoritative": {
+                        "type": "boolean"
+                      },
+                      "contract_sha256": {
+                        "pattern": "^[0-9a-f]{64}$",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "cross_check": {
+                        "type": [
+                          "object",
+                          "null"
+                        ]
+                      },
+                      "exposure": {
+                        "properties": {
+                          "events": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "methods": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "interface_error": {
+                        "type": "string"
+                      },
+                      "interface_sha256": {
+                        "pattern": "^[0-9a-f]{64}$",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "interface_status": {
+                        "enum": [
+                          "pending",
+                          "ok",
+                          "untyped",
+                          "invalid"
+                        ],
+                        "type": "string"
+                      },
+                      "module": {
+                        "type": "string"
+                      },
+                      "source": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "module"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "The module views."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        },
+        "summary": "Describe every exposed module.",
+        "tags": [
+          "bridge"
+        ],
+        "x-logos-bridge-op": true
+      }
+    },
+    "/modules/test_fullapi_ext_cpp/echoBlob": {
+      "post": {
+        "operationId": "test_fullapi_ext_cpp.echoBlob",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "v": {
+                        "$ref": "#/components/schemas/test_fullapi_ext_cpp.Blob"
+                      }
+                    },
+                    "required": [
+                      "v"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "prefixItems": [
+                      {
+                        "$ref": "#/components/schemas/test_fullapi_ext_cpp.Blob"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/test_fullapi_ext_cpp.Blob"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "tags": [
+          "test_fullapi_ext_cpp"
+        ],
+        "x-logos-method": "echoBlob",
+        "x-logos-module": "test_fullapi_ext_cpp"
+      }
+    },
+    "/modules/test_fullapi_ext_cpp/echoBlobList": {
+      "post": {
+        "operationId": "test_fullapi_ext_cpp.echoBlobList",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "v": {
+                        "items": {
+                          "$ref": "#/components/schemas/test_fullapi_ext_cpp.Blob"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "v"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "prefixItems": [
+                      {
+                        "items": {
+                          "$ref": "#/components/schemas/test_fullapi_ext_cpp.Blob"
+                        },
+                        "type": "array"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "items": {
+                                "$ref": "#/components/schemas/test_fullapi_ext_cpp.Blob"
+                              },
+                              "type": "array"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "tags": [
+          "test_fullapi_ext_cpp"
+        ],
+        "x-logos-method": "echoBlobList",
+        "x-logos-module": "test_fullapi_ext_cpp"
+      }
+    },
+    "/modules/test_fullapi_ext_cpp/echoBlobMap": {
+      "post": {
+        "operationId": "test_fullapi_ext_cpp.echoBlobMap",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "v": {
+                        "additionalProperties": {
+                          "$ref": "#/components/schemas/test_fullapi_ext_cpp.Blob"
+                        },
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "v"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "prefixItems": [
+                      {
+                        "additionalProperties": {
+                          "$ref": "#/components/schemas/test_fullapi_ext_cpp.Blob"
+                        },
+                        "type": "object"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": {
+                                "$ref": "#/components/schemas/test_fullapi_ext_cpp.Blob"
+                              },
+                              "type": "object"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "tags": [
+          "test_fullapi_ext_cpp"
+        ],
+        "x-logos-method": "echoBlobMap",
+        "x-logos-module": "test_fullapi_ext_cpp"
+      }
+    },
+    "/modules/test_fullapi_ext_cpp/echoBytesList": {
+      "post": {
+        "operationId": "test_fullapi_ext_cpp.echoBytesList",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "v": {
+                        "items": {
+                          "$ref": "#/components/schemas/Bytes"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "v"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "prefixItems": [
+                      {
+                        "items": {
+                          "$ref": "#/components/schemas/Bytes"
+                        },
+                        "type": "array"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "items": {
+                                "$ref": "#/components/schemas/Bytes"
+                              },
+                              "type": "array"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "tags": [
+          "test_fullapi_ext_cpp"
+        ],
+        "x-logos-method": "echoBytesList",
+        "x-logos-module": "test_fullapi_ext_cpp"
+      }
+    },
+    "/modules/test_fullapi_ext_cpp/echoBytesMap": {
+      "post": {
+        "operationId": "test_fullapi_ext_cpp.echoBytesMap",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "v": {
+                        "additionalProperties": {
+                          "$ref": "#/components/schemas/Bytes"
+                        },
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "v"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "prefixItems": [
+                      {
+                        "additionalProperties": {
+                          "$ref": "#/components/schemas/Bytes"
+                        },
+                        "type": "object"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": {
+                                "$ref": "#/components/schemas/Bytes"
+                              },
+                              "type": "object"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "tags": [
+          "test_fullapi_ext_cpp"
+        ],
+        "x-logos-method": "echoBytesMap",
+        "x-logos-module": "test_fullapi_ext_cpp"
+      }
+    },
+    "/modules/test_fullapi_ext_cpp/echoIntMap": {
+      "post": {
+        "operationId": "test_fullapi_ext_cpp.echoIntMap",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "v": {
+                        "additionalProperties": {
+                          "format": "int64",
+                          "maximum": 9223372036854775807,
+                          "minimum": -9223372036854775808,
+                          "type": "integer"
+                        },
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "v"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "prefixItems": [
+                      {
+                        "additionalProperties": {
+                          "format": "int64",
+                          "maximum": 9223372036854775807,
+                          "minimum": -9223372036854775808,
+                          "type": "integer"
+                        },
+                        "type": "object"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": {
+                                "format": "int64",
+                                "maximum": 9223372036854775807,
+                                "minimum": -9223372036854775808,
+                                "type": "integer"
+                              },
+                              "type": "object"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "tags": [
+          "test_fullapi_ext_cpp"
+        ],
+        "x-logos-method": "echoIntMap",
+        "x-logos-module": "test_fullapi_ext_cpp"
+      }
+    },
+    "/modules/test_fullapi_ext_cpp/echoMapOfBytesLists": {
+      "post": {
+        "operationId": "test_fullapi_ext_cpp.echoMapOfBytesLists",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "v": {
+                        "additionalProperties": {
+                          "items": {
+                            "$ref": "#/components/schemas/Bytes"
+                          },
+                          "type": "array"
+                        },
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "v"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "prefixItems": [
+                      {
+                        "additionalProperties": {
+                          "items": {
+                            "$ref": "#/components/schemas/Bytes"
+                          },
+                          "type": "array"
+                        },
+                        "type": "object"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": {
+                                "items": {
+                                  "$ref": "#/components/schemas/Bytes"
+                                },
+                                "type": "array"
+                              },
+                              "type": "object"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "tags": [
+          "test_fullapi_ext_cpp"
+        ],
+        "x-logos-method": "echoMapOfBytesLists",
+        "x-logos-module": "test_fullapi_ext_cpp"
+      }
+    },
+    "/modules/test_fullapi_ext_cpp/echoNestedInts": {
+      "post": {
+        "operationId": "test_fullapi_ext_cpp.echoNestedInts",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "v": {
+                        "items": {
+                          "items": {
+                            "format": "int64",
+                            "maximum": 9223372036854775807,
+                            "minimum": -9223372036854775808,
+                            "type": "integer"
+                          },
+                          "type": "array"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "v"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "prefixItems": [
+                      {
+                        "items": {
+                          "items": {
+                            "format": "int64",
+                            "maximum": 9223372036854775807,
+                            "minimum": -9223372036854775808,
+                            "type": "integer"
+                          },
+                          "type": "array"
+                        },
+                        "type": "array"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "items": {
+                                "items": {
+                                  "format": "int64",
+                                  "maximum": 9223372036854775807,
+                                  "minimum": -9223372036854775808,
+                                  "type": "integer"
+                                },
+                                "type": "array"
+                              },
+                              "type": "array"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "tags": [
+          "test_fullapi_ext_cpp"
+        ],
+        "x-logos-method": "echoNestedInts",
+        "x-logos-module": "test_fullapi_ext_cpp"
+      }
+    },
+    "/modules/test_fullapi_ext_cpp/echoOpt": {
+      "post": {
+        "operationId": "test_fullapi_ext_cpp.echoOpt",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "v": {
+                        "$ref": "#/components/schemas/test_fullapi_ext_cpp.Opt"
+                      }
+                    },
+                    "required": [
+                      "v"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "prefixItems": [
+                      {
+                        "$ref": "#/components/schemas/test_fullapi_ext_cpp.Opt"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/test_fullapi_ext_cpp.Opt"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "tags": [
+          "test_fullapi_ext_cpp"
+        ],
+        "x-logos-method": "echoOpt",
+        "x-logos-module": "test_fullapi_ext_cpp"
+      }
+    },
+    "/modules/test_fullapi_ext_cpp/echoOptList": {
+      "post": {
+        "operationId": "test_fullapi_ext_cpp.echoOptList",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "v": {
+                        "items": {
+                          "$ref": "#/components/schemas/test_fullapi_ext_cpp.Opt"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "v"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "prefixItems": [
+                      {
+                        "items": {
+                          "$ref": "#/components/schemas/test_fullapi_ext_cpp.Opt"
+                        },
+                        "type": "array"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "items": {
+                                "$ref": "#/components/schemas/test_fullapi_ext_cpp.Opt"
+                              },
+                              "type": "array"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "tags": [
+          "test_fullapi_ext_cpp"
+        ],
+        "x-logos-method": "echoOptList",
+        "x-logos-module": "test_fullapi_ext_cpp"
+      }
+    },
+    "/modules/test_fullapi_ext_cpp/echoOptional": {
+      "post": {
+        "operationId": "test_fullapi_ext_cpp.echoOptional",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "v": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "prefixItems": [
+                      {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot). With no required parameter the body may be empty.",
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "tags": [
+          "test_fullapi_ext_cpp"
+        ],
+        "x-logos-method": "echoOptional",
+        "x-logos-module": "test_fullapi_ext_cpp"
+      }
+    },
+    "/modules/test_fullapi_ext_cpp/echoStringMap": {
+      "post": {
+        "operationId": "test_fullapi_ext_cpp.echoStringMap",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "v": {
+                        "additionalProperties": {
+                          "type": "string"
+                        },
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "v"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "prefixItems": [
+                      {
+                        "additionalProperties": {
+                          "type": "string"
+                        },
+                        "type": "object"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": {
+                                "type": "string"
+                              },
+                              "type": "object"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "tags": [
+          "test_fullapi_ext_cpp"
+        ],
+        "x-logos-method": "echoStringMap",
+        "x-logos-module": "test_fullapi_ext_cpp"
+      }
+    },
+    "/modules/test_fullapi_ext_cpp/fireBlobEvent": {
+      "post": {
+        "operationId": "test_fullapi_ext_cpp.fireBlobEvent",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "v": {
+                        "$ref": "#/components/schemas/test_fullapi_ext_cpp.Blob"
+                      }
+                    },
+                    "required": [
+                      "v"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": false,
+                    "maxItems": 1,
+                    "minItems": 1,
+                    "prefixItems": [
+                      {
+                        "$ref": "#/components/schemas/test_fullapi_ext_cpp.Blob"
+                      }
+                    ],
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "description": "The parameters, by name (an object) or by position (an array of exactly the declared arity, null for an empty optional slot).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "type": "boolean"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "tags": [
+          "test_fullapi_ext_cpp"
+        ],
+        "x-logos-method": "fireBlobEvent",
+        "x-logos-module": "test_fullapi_ext_cpp"
+      }
+    },
+    "/modules/test_fullapi_ext_cpp/lidl": {
+      "post": {
+        "description": "The module's canonical LIDL interface document.\n\nReturns this module's full canonical LIDL contract: the exact `.lidl` text its build published, never filtered by this bridge's policy.\n\nBuilt-in: always callable for an exposed module, whatever this bridge's method policy.",
+        "operationId": "test_fullapi_ext_cpp.lidl",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/NoParams"
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "The module's canonical LIDL interface document.",
+        "tags": [
+          "test_fullapi_ext_cpp"
+        ],
+        "x-logos-derived": true,
+        "x-logos-method": "lidl",
+        "x-logos-module": "test_fullapi_ext_cpp"
+      }
+    },
+    "/modules/test_fullapi_ext_cpp/name": {
+      "post": {
+        "description": "The module's name, as declared in its metadata.\n\nBuilt-in: always callable for an exposed module, whatever this bridge's method policy.",
+        "operationId": "test_fullapi_ext_cpp.name",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/NoParams"
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "The module's name, as declared in its metadata.",
+        "tags": [
+          "test_fullapi_ext_cpp"
+        ],
+        "x-logos-derived": true,
+        "x-logos-method": "name",
+        "x-logos-module": "test_fullapi_ext_cpp"
+      }
+    },
+    "/modules/test_fullapi_ext_cpp/version": {
+      "post": {
+        "description": "The module's version, as declared in its metadata.\n\nBuilt-in: always callable for an exposed module, whatever this bridge's method policy.",
+        "operationId": "test_fullapi_ext_cpp.version",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/NoParams"
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "The module's version, as declared in its metadata.",
+        "tags": [
+          "test_fullapi_ext_cpp"
+        ],
+        "x-logos-derived": true,
+        "x-logos-method": "version",
+        "x-logos-module": "test_fullapi_ext_cpp"
+      }
+    },
+    "/modules/test_fullapi_ext_cpp/whoAmI": {
+      "post": {
+        "operationId": "test_fullapi_ext_cpp.whoAmI",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/NoParams"
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "result": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "$ref": "#/components/schemas/ProviderRejection"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The call's outcome: the method's value (or a ProviderRejection), or a JSON-RPC error."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "tags": [
+          "test_fullapi_ext_cpp"
+        ],
+        "x-logos-method": "whoAmI",
+        "x-logos-module": "test_fullapi_ext_cpp"
+      }
+    },
+    "/modules/{module}": {
+      "get": {
+        "description": "The rpc.schema view: interface_status, the complete LIDL contract as `interface` when ok, this bridge's exposure, the digests and the live report.",
+        "operationId": "getModule",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "module",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "The bridge's view of one module. Keys not listed here are the live report.",
+                  "properties": {
+                    "authoritative": {
+                      "type": "boolean"
+                    },
+                    "contract_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "cross_check": {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
+                    "exposure": {
+                      "properties": {
+                        "events": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "methods": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "interface": {
+                      "description": "The complete LIDL JSON AST (as `lidl json --identity` prints it); present only when interface_status is ok.",
+                      "type": "object"
+                    },
+                    "interface_error": {
+                      "type": "string"
+                    },
+                    "interface_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "interface_status": {
+                      "enum": [
+                        "pending",
+                        "ok",
+                        "untyped",
+                        "invalid"
+                      ],
+                      "type": "string"
+                    },
+                    "module": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "module"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The module view."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonRpcError"
+                }
+              }
+            },
+            "description": "Not exposed or unknown: the same -32601 error object a denied call gets."
+          }
+        },
+        "summary": "Describe one exposed module.",
+        "tags": [
+          "bridge"
+        ],
+        "x-logos-bridge-op": true
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "description": "The OpenAPI 3.1.1 description of this bridge.",
+        "operationId": "getOpenApi",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "This OpenAPI document."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        },
+        "summary": "This document.",
+        "tags": [
+          "bridge"
+        ],
+        "x-logos-bridge-op": true
+      }
+    },
+    "/rpc": {
+      "post": {
+        "description": "One request or a batch. Every rpc.* operation and every `<module>.<method>` alias (see rpc.discover) is accepted here; events need the WebSocket endpoint (see /asyncapi.json). A request without an id is still answered, with id null: a module call is refused with -32600, and any other operation runs.",
+        "operationId": "postRpc",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "properties": {
+                      "id": {
+                        "$ref": "#/components/schemas/JsonRpcId"
+                      },
+                      "jsonrpc": {
+                        "const": "2.0"
+                      },
+                      "method": {
+                        "type": "string"
+                      },
+                      "params": {
+                        "type": [
+                          "object",
+                          "array"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "jsonrpc",
+                      "method"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "items": {
+                      "properties": {
+                        "id": {
+                          "$ref": "#/components/schemas/JsonRpcId"
+                        },
+                        "jsonrpc": {
+                          "const": "2.0"
+                        },
+                        "method": {
+                          "type": "string"
+                        },
+                        "params": {
+                          "type": [
+                            "object",
+                            "array"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "jsonrpc",
+                        "method"
+                      ],
+                      "type": "object"
+                    },
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                ]
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "oneOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "id": {
+                              "$ref": "#/components/schemas/JsonRpcId"
+                            },
+                            "jsonrpc": {
+                              "const": "2.0"
+                            },
+                            "result": {}
+                          },
+                          "required": [
+                            "jsonrpc",
+                            "id",
+                            "result"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                        }
+                      ]
+                    },
+                    {
+                      "items": {
+                        "oneOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "id": {
+                                "$ref": "#/components/schemas/JsonRpcId"
+                              },
+                              "jsonrpc": {
+                                "const": "2.0"
+                              },
+                              "result": {}
+                            },
+                            "required": [
+                              "jsonrpc",
+                              "id",
+                              "result"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "$ref": "#/components/schemas/JsonRpcErrorResponse"
+                          }
+                        ]
+                      },
+                      "minItems": 1,
+                      "type": "array"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "The response, or the batch of responses. JSON-RPC failures ride in the body at 200."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "411": {
+            "$ref": "#/components/responses/LengthRequired"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        },
+        "summary": "JSON-RPC 2.0 endpoint.",
+        "tags": [
+          "bridge"
+        ],
+        "x-logos-bridge-op": true
+      }
+    }
+  },
+  "servers": [
+    {
+      "description": "Loopback only.",
+      "url": "http://127.0.0.1:8645"
+    }
+  ],
+  "tags": [
+    {
+      "description": "The bridge's own routes.",
+      "name": "bridge"
+    },
+    {
+      "description": "C++ mirror of test_fullapi_ext_rust, HEADER-FIRST like test_fullapi_cpp: the contract is derived from the impl header, records included. Keeps the two ext providers comparable cell for cell.",
+      "name": "test_fullapi_ext_cpp"
+    }
+  ],
+  "x-logos-modules": [
+    {
+      "contract_sha256": "7308b6432d35a7e367dc33219e9c059c59faac89a3aabd05b2b6984f934bd1fe",
+      "exposure": {
+        "events": [],
+        "methods": [
+          "whoAmI",
+          "echoBlob",
+          "echoBlobList",
+          "echoBlobMap",
+          "echoBytesList",
+          "echoBytesMap",
+          "echoIntMap",
+          "echoStringMap",
+          "echoNestedInts",
+          "echoMapOfBytesLists",
+          "echoOpt",
+          "echoOptList",
+          "echoOptional",
+          "fireBlobEvent",
+          "name",
+          "version",
+          "lidl"
+        ]
+      },
+      "interface_sha256": "435ba4bdc7c854b718a2584e4252cbe6a25b85727286b890b6dfccb29f238e5d",
+      "name": "test_fullapi_ext_cpp",
+      "status": "ok"
+    }
+  ]
+}

@@ -46,36 +46,37 @@ public:
     // HTTP/WebSocket server. Idempotent in the sense that a second call while
     // running fails rather than rebinding.
     //
-    // On success `value` is
+    // On success `value` is what getInfo() then reports, e.g.
     //   {"http":"http://127.0.0.1:8645", "ws":"ws://127.0.0.1:8645/ws",
     //    "modules":[...], "protocol_version":"0.9.0",
-    //    "subscription_continuity":true}
+    //    "subscription_continuity":true, "docs":{...}, ...}
     // On failure `error` names the reason. Config shape and every default are
     // documented in README.md; the short version:
     //   {"http":{"host","port","allowed_origins"},
     //    "auth":{"mode":"none"|"bearer"},
     //    "expose":{"modules":[ "<name>" | {"name","methods":{"allow","deny"},
     //                                             "events":{"allow","deny"}} ]},
-    //    "limits":{...}}
+    //    "limits":{...}, "discovery":{"revalidate_ms"}}
     //
-    // Refuses outright: a non-loopback host, an empty expose list, and exposing
-    // this module itself.
+    // Refuses outright, among the rest README.md lists: a non-loopback host, an
+    // empty expose list, exposing this module itself, a module named "rpc", and
+    // a deny list naming lidl, name or version.
     StdLogosResult start(const std::string& configJson);
 
     // Stop the server, drop every client connection and every upstream
     // subscription. Returns failure if it was not running.
     StdLogosResult stop();
 
-    // Current state as a JSON object: whether it is running, the bound
-    // endpoints, the resolved exposure, live connection and subscription
-    // counts, and the protocol version in use (which decides whether
-    // subscription-loss notification is available at all).
+    // Current state as a JSON object: whether it is running, this bridge's
+    // version, the bound endpoints, the resolved exposure, live connection and
+    // subscription counts, the protocol version in use (which decides whether
+    // subscription-loss notification is available at all), the LIDL reader,
+    // the discovery settings, and the served documents' snapshot.
     std::string getInfo();
 
 protected:
     // Hard-stop everything before the host tears the module down. Returns
-    // Asynchronous: connections have to be closed and threads joined, and doing
-    // that inline on the dispatch thread would block the host.
+    // Synchronous: every step is bounded, and a detached thread could outlive the module.
     LogosShutdown aboutToUnload() override;
 
 private:

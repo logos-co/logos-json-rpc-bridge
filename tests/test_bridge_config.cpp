@@ -100,6 +100,63 @@ LOGOS_TEST(exposing_self_is_refused) {
     LOGOS_ASSERT_CONTAINS(r.error, "recurses");
 }
 
+// rpc.* is the bridge's namespace; a module named rpc could never be aliased.
+LOGOS_TEST(a_module_named_rpc_is_refused) {
+    auto bare = parse(R"({"expose":{"modules":["rpc"]}})");
+    LOGOS_ASSERT_FALSE(bare.ok);
+    LOGOS_ASSERT_CONTAINS(bare.error, "rpc");
+    LOGOS_ASSERT_FALSE(parse(R"({"expose":{"modules":[{"name":"rpc"}]}})").ok);
+    LOGOS_ASSERT_TRUE(parse(R"({"expose":{"modules":["rpc_module"]}})").ok);
+}
+
+// A '.' would make "<module>.<method>" ambiguous; whitespace and control
+// characters have no business in a name that is also a path segment.
+LOGOS_TEST(module_names_with_dots_whitespace_or_control_characters_are_refused) {
+    for (const char* name : {"a.b", ".a", "a.", "a b", " a", "a\\tb", "a\\nb",
+                             "a\\u0001", "a\\u007f"}) {
+        const std::string j = std::string(R"({"expose":{"modules":[")") + name + R"("]}})";
+        auto r = parse(j);
+        LOGOS_ASSERT_FALSE(r.ok);
+    }
+    auto dotted = parse(R"({"expose":{"modules":["storage.module"]}})");
+    LOGOS_ASSERT_CONTAINS(dotted.error, "'.'");
+}
+
+LOGOS_TEST(non_ascii_module_names_are_accepted) {
+    LOGOS_ASSERT_TRUE(parse(R"({"expose":{"modules":["m\u00f3dulo","m_1-x"]}})").ok);
+}
+
+// Policy restricts calls, not knowledge: the built-ins cannot be denied.
+LOGOS_TEST(denying_a_built_in_method_is_refused) {
+    for (const char* b : {"lidl", "name", "version"}) {
+        const std::string j = std::string(R"({"expose":{"modules":[{"name":"m1",)") +
+                              R"("methods":{"deny":[")" + b + R"("]}}]}})";
+        auto r = parse(j);
+        LOGOS_ASSERT_FALSE(r.ok);
+        LOGOS_ASSERT_CONTAINS(r.error, "built-ins");
+        LOGOS_ASSERT_CONTAINS(r.error, b);
+    }
+}
+
+// An allow list need not name them: they are implicitly allowed.
+LOGOS_TEST(an_allow_list_leaves_the_built_ins_callable) {
+    auto r = parse(R"({"expose":{"modules":[{"name":"m1","methods":{"allow":["get"]}}]}})");
+    LOGOS_ASSERT_TRUE(r.ok);
+    const ExposedModule* m = r.config.find("m1");
+    for (const char* b : {"lidl", "name", "version"}) {
+        LOGOS_ASSERT_FALSE(m->methods.permits(b));
+        LOGOS_ASSERT_TRUE(m->methodAllowed(b));
+    }
+    LOGOS_ASSERT_TRUE(m->methodAllowed("get"));
+    LOGOS_ASSERT_FALSE(m->methodAllowed("other"));
+}
+
+// The rule is about methods; an event that happens to be called "version" is not special.
+LOGOS_TEST(an_event_policy_may_name_a_built_in) {
+    LOGOS_ASSERT_TRUE(
+        parse(R"({"expose":{"modules":[{"name":"m1","events":{"deny":["version"]}}]}})").ok);
+}
+
 LOGOS_TEST(duplicate_module_is_refused) {
     auto r = parse(R"({"expose":{"modules":["m1","m1"]}})");
     LOGOS_ASSERT_FALSE(r.ok);
@@ -200,6 +257,40 @@ LOGOS_TEST(limits_override_defaults_and_reject_non_positive) {
 
     LOGOS_ASSERT_FALSE(parse(R"({"expose":{"modules":["m1"]},"limits":{"max_body_bytes":0}})").ok);
     LOGOS_ASSERT_FALSE(parse(R"({"expose":{"modules":["m1"]},"limits":{"call_timeout_ms":-1}})").ok);
+}
+
+// ── discovery ───────────────────────────────────────────────────────────────
+
+LOGOS_TEST(revalidation_defaults_to_ten_seconds) {
+    auto r = parse(kMinimal);
+    LOGOS_ASSERT_TRUE(r.ok);
+    LOGOS_ASSERT_EQ(r.config.discovery.revalidateMs, 10000);
+    auto empty = parse(R"({"expose":{"modules":["m1"]},"discovery":{}})");
+    LOGOS_ASSERT_TRUE(empty.ok);
+    LOGOS_ASSERT_EQ(empty.config.discovery.revalidateMs, 10000);
+}
+
+LOGOS_TEST(revalidation_accepts_zero_to_disable_and_a_second_or_more) {
+    for (int ms : {0, 1000, 2000, 60000, 2147483647}) {
+        auto r = parse(R"({"expose":{"modules":["m1"]},"discovery":{"revalidate_ms":)" +
+                       std::to_string(ms) + "}}");
+        LOGOS_ASSERT_TRUE(r.ok);
+        LOGOS_ASSERT_EQ(r.config.discovery.revalidateMs, ms);
+    }
+}
+
+// Sub-second polling would hammer every module for little gain; 1..999 is a typo.
+LOGOS_TEST(revalidation_below_a_second_or_malformed_is_refused) {
+    for (const char* v : {"1", "999", "-1", "-1000", "\"2000\"", "1500.5", "true", "null",
+                          "2147483648", "18446744073709551615"}) {
+        auto r = parse(std::string(R"({"expose":{"modules":["m1"]},"discovery":{"revalidate_ms":)") +
+                       v + "}}");
+        LOGOS_ASSERT_FALSE(r.ok);
+        LOGOS_ASSERT_CONTAINS(r.error, "discovery.revalidate_ms");
+    }
+    auto shape = parse(R"({"expose":{"modules":["m1"]},"discovery":[]})");
+    LOGOS_ASSERT_FALSE(shape.ok);
+    LOGOS_ASSERT_CONTAINS(shape.error, "discovery must be an object");
 }
 
 // ── malformed input ─────────────────────────────────────────────────────────

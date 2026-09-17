@@ -27,6 +27,7 @@
 // the mistake an easy one to reintroduce. Do not inspect a result payload here.
 
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -162,5 +163,29 @@ inline nlohmann::json invalidParamsJson(const std::string& reason, const std::st
 // paths and instance ids, and forwarding it verbatim to an external client
 // leaks the node's filesystem layout. Upstream detail is logged locally, never
 // serialised into a response.
+
+// Every JSON-RPC error the bridge can emit, one per code, under the stable key documents
+// name it by. kCancelled is absent: nothing emits it (rpc.cancel answers a result).
+struct CatalogError {
+    const char* key;
+    MappedError error;
+};
+
+inline std::vector<CatalogError> errorCatalog() {
+    return {
+        {"ParseError", {kParseError, LogosErrorCode::InvalidParams, "parse error"}},
+        {"InvalidRequest", {kInvalidRequest, LogosErrorCode::InvalidParams, "invalid request"}},
+        {"MethodNotFound", notFound()},
+        {"InvalidParams", invalidParams("schema-mismatch")},
+        {"UpstreamFailed", mapCallError("unrecognised", "")},
+        {"CallFailed", mapCallError("call_failed", "")},
+        {"ModuleUnavailable", mapCallError("object_unavailable", "")},
+        {"UpstreamTimeout", mapCallError("timeout", "")},
+        {"TransportError", mapCallError("transport_error", "")},
+        {"NotAuthorised", mapCallError("unauthorized", "")},
+        {"ShuttingDown", {kShuttingDown, LogosErrorCode::NotReady, "shutting down"}},
+        {"Overloaded", {kOverloaded, LogosErrorCode::NotReady, "overloaded"}},
+    };
+}
 
 } // namespace bridge

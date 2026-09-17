@@ -9,6 +9,8 @@
 // standing up a server or a module host.
 
 #include <cctype>
+#include <cstdint>
+#include <limits>
 #include <set>
 #include <string>
 #include <vector>
@@ -53,10 +55,21 @@ struct NamePolicy {
     }
 };
 
+// Introspection built-ins: callable on every exposed module whatever the
+// method policy. Policy restricts calls, not knowledge.
+inline bool isBuiltinMethod(const std::string& name) {
+    return name == "lidl" || name == "name" || name == "version";
+}
+
 struct ExposedModule {
     std::string name;
     NamePolicy methods;
     NamePolicy events;
+
+    // The method policy with the built-ins implicitly allowed.
+    bool methodAllowed(const std::string& method) const {
+        return isBuiltinMethod(method) || methods.permits(method);
+    }
 };
 
 struct Limits {
@@ -71,6 +84,12 @@ struct Limits {
     int callTimeoutMs = 30000;
 };
 
+// How often discovery re-reads each module's live report (0 = never), so a
+// reload too fast for the subscription watcher is still noticed.
+struct DiscoverySettings {
+    int revalidateMs = 10000;
+};
+
 enum class AuthMode { None, Bearer };
 
 struct BridgeConfig {
@@ -83,6 +102,7 @@ struct BridgeConfig {
     AuthMode authMode = AuthMode::None;
     std::vector<ExposedModule> modules;
     Limits limits;
+    DiscoverySettings discovery;
 
     const ExposedModule* find(const std::string& moduleName) const {
         for (const auto& m : modules)
@@ -143,6 +163,28 @@ inline bool readPolicy(const nlohmann::json& j, NamePolicy* out, std::string* er
                 *err = where + ".deny contains a duplicate: " + e.get<std::string>();
                 return false;
             }
+        }
+    }
+    return true;
+}
+
+// Module names are alias prefixes ("<module>.<method>") and path segments.
+inline bool checkModuleName(const std::string& name, std::string* err) {
+    const std::string quoted = nlohmann::json(name).dump();
+    if (name == "rpc") {
+        *err = "expose.modules must not contain \"rpc\": rpc.* names bridge operations";
+        return false;
+    }
+    for (unsigned char c : name) {
+        if (c == '.') {
+            *err = "expose.modules name " + quoted +
+                   " contains '.', which separates module from method in an alias";
+            return false;
+        }
+        if (c == ' ' || c < 0x20 || c == 0x7f) {
+            *err = "expose.modules name " + quoted +
+                   " contains whitespace or a control character";
+            return false;
         }
     }
     return true;
@@ -255,9 +297,17 @@ inline ConfigParseResult parseBridgeConfig(const std::string& configJson,
         }
 
         if (em.name.empty()) { r.error = "expose.modules contains an empty name"; return r; }
+        if (!detail::checkModuleName(em.name, &r.error)) return r;
         if (!selfModuleName.empty() && em.name == selfModuleName) {
             r.error = "expose.modules must not contain this module itself (\"" +
                       selfModuleName + "\") -- bridging the bridge recurses";
+            return r;
+        }
+        for (const char* builtin : {"lidl", "name", "version"}) {
+            if (!em.methods.deny.count(builtin)) continue;
+            r.error = "expose.modules[" + em.name + "].methods.deny must not name '" +
+                      builtin + "': lidl, name and version are introspection built-ins, "
+                      "callable on every exposed module (an allow list need not name them)";
             return r;
         }
         for (const auto& seen : c.modules) {
@@ -304,6 +354,24 @@ inline ConfigParseResult parseBridgeConfig(const std::string& configJson,
                 r.error = std::string("limits.") + p.name + " must be positive";
                 return r;
             }
+        }
+    }
+
+    // ---- discovery --------------------------------------------------------
+    if (j.contains("discovery")) {
+        const auto& d = j["discovery"];
+        if (!d.is_object()) { r.error = "discovery must be an object"; return r; }
+        if (d.contains("revalidate_ms")) {
+            const auto& v = d["revalidate_ms"];
+            const bool fits = v.is_number_unsigned() &&
+                v.get<std::uint64_t>() <= static_cast<std::uint64_t>(std::numeric_limits<int>::max());
+            const int ms = fits ? static_cast<int>(v.get<std::uint64_t>()) : -1;
+            if (ms < 0 || (ms > 0 && ms < 1000)) {
+                r.error = "discovery.revalidate_ms must be 0 (off) or an integer of at least 1000 (got " +
+                          v.dump() + ")";
+                return r;
+            }
+            c.discovery.revalidateMs = ms;
         }
     }
 
