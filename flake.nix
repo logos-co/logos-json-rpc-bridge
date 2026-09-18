@@ -86,6 +86,30 @@
           docs-metaschema = docsMetaschema system;
           docs-golden = docsGolden system;
         });
+
+      unitTests = extra: logos-module-builder.lib.mkLogosModuleTests ({
+        src = ./.;
+        testDir = ./tests;
+        configFile = ./metadata.json;
+        flakeInputs = inputs;
+        externalLibInputs = testLibs;
+        preConfigure = lidlPreConfigure;
+      } // extra);
+      # The same suite under ThreadSanitizer, for upstream.h's lock-free delivery.
+      # Linux and clang only: nix clang's TSan runtime crashes at startup on macOS,
+      # and GCC 14's dies at random under ASLR ("unexpected memory mapping").
+      tsanTests = system: (unitTests {
+        extraBuildInputs = [ (logos-module-builder.lib.common.mkPkgs system).clang ];
+        extraCmakeFlags = [
+          "-DCMAKE_CXX_COMPILER=clang++"
+          "-DCMAKE_BUILD_TYPE=Debug"   # -g, so a report names file:line
+          "-DCMAKE_CXX_FLAGS=-fsanitize=thread"
+          "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread"
+        ];
+      }).${system}.unit-tests.overrideAttrs (o: { pname = "${o.pname}-tsan"; });
+      withTsanCheck = builtins.mapAttrs (system: checks:
+        if builtins.match ".*-linux" system == null then checks
+        else checks // { unit-tests-tsan = tsanTests system; });
     in
     module // {
       packages = withDocsCli module.packages;
@@ -94,13 +118,6 @@
       # hasTests by grepping the flake for exactly that, so a checks output
       # reached any other way records hasTests=false and `ws test` then reports
       # "no tests" WITHOUT failing.
-      checks = withDocsChecks (logos-module-builder.lib.mkLogosModuleTests {
-        src = ./.;
-        testDir = ./tests;
-        configFile = ./metadata.json;
-        flakeInputs = inputs;
-        externalLibInputs = testLibs;
-        preConfigure = lidlPreConfigure;
-      });
+      checks = withTsanCheck (withDocsChecks (unitTests { }));
     };
 }
