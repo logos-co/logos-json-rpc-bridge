@@ -367,6 +367,23 @@ struct Delivery {
     std::uint64_t generation = 0;
 };
 
+// A shared_ptr read without a lock, so its only accessors are atomic: there is no
+// plain operator= to reach past them. std::atomic<std::shared_ptr> is the C++20
+// spelling, and libc++ 19 does not implement it.
+template <class T>
+class AtomicSharedPtr {
+public:
+    explicit AtomicSharedPtr(std::shared_ptr<T> p) : m_p(std::move(p)) {}
+    AtomicSharedPtr(const AtomicSharedPtr&) = delete;
+    AtomicSharedPtr& operator=(const AtomicSharedPtr&) = delete;
+
+    std::shared_ptr<T> load() const { return std::atomic_load(&m_p); }
+    void store(std::shared_ptr<T> p) { std::atomic_store(&m_p, std::move(p)); }
+
+private:
+    std::shared_ptr<T> m_p;
+};
+
 template <class Client>
 class BasicSubscriptionHub {
 public:
@@ -411,7 +428,6 @@ public:
                 up = std::make_shared<Up>();
                 up->module = module;
                 up->event = event;
-                up->subscribers = std::make_shared<const Subscribers>();
                 m_up.emplace(key, up);
                 needsSubscribe = true;
             } else {
@@ -488,12 +504,11 @@ public:
             std::lock_guard<std::mutex> lock(m_subMu);
             auto it = m_up.find(Key{module, event});
             if (it == m_up.end()) return;
-            subs = std::atomic_load(&it->second->subscribers);
+            subs = it->second->subscribers.load();
             it->second->generation.fetch_add(1, std::memory_order_acq_rel);
             mod = it->second->module;
             ev = it->second->event;
-            it->second->subscribers = std::make_shared<const Subscribers>();
-            std::atomic_store(&it->second->subscribers, it->second->subscribers);
+            it->second->subscribers.store(std::make_shared<const Subscribers>());
         }
         if (!subs) return;
         for (std::uint64_t id : subs->ids) m_onLost(id, mod, ev, why);   // no lock held
@@ -536,7 +551,7 @@ private:
         std::string module, event;
         Handle handle;
         std::uint64_t epoch = 0;   // the client `handle` came from; 0 until bound
-        std::shared_ptr<const Subscribers> subscribers;
+        AtomicSharedPtr<const Subscribers> subscribers{std::make_shared<const Subscribers>()};
         std::atomic<std::uint64_t> generation{1};
     };
     // Per module: the client epoch whose watcher is installed, and the one whose reports count.
@@ -597,7 +612,7 @@ private:
             // Lock-free read of the published snapshot — invariant 2's other
             // half: delivery never takes m_subMu, so it can never be the thread
             // an unsubscribe is waiting behind.
-            auto subs = std::atomic_load(&up->subscribers);
+            auto subs = up->subscribers.load();
             if (!subs || subs->ids.empty()) return;
             const std::uint64_t gen = up->generation.load(std::memory_order_acquire);
             for (std::uint64_t id : subs->ids)
@@ -649,22 +664,20 @@ private:
     }
 
     void addSubscriberLocked(const std::shared_ptr<Up>& up, std::uint64_t id) {
-        auto next = std::make_shared<Subscribers>(*std::atomic_load(&up->subscribers));
+        auto next = std::make_shared<Subscribers>(*up->subscribers.load());
         for (std::uint64_t existing : next->ids)
             if (existing == id) return;
         next->ids.push_back(id);
-        std::atomic_store(&up->subscribers,
-                          std::shared_ptr<const Subscribers>(std::move(next)));
+        up->subscribers.store(std::move(next));
     }
 
     void removeSubscriberLocked(const std::shared_ptr<Up>& up, std::uint64_t id) {
-        auto cur = std::atomic_load(&up->subscribers);
+        auto cur = up->subscribers.load();
         if (!cur) return;
         auto next = std::make_shared<Subscribers>();
         for (std::uint64_t existing : cur->ids)
             if (existing != id) next->ids.push_back(existing);
-        std::atomic_store(&up->subscribers,
-                          std::shared_ptr<const Subscribers>(std::move(next)));
+        up->subscribers.store(std::move(next));
     }
 
     Registry* m_clients;

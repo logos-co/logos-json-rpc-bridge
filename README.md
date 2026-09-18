@@ -621,11 +621,14 @@ json-rpc-bridge-docs --config PATH --format openrpc|openapi|asyncapi|schema|inte
 nix build                            # the plugin
 nix build .#lgx                      # an installable package
 nix build .#json-rpc-bridge-docs     # the offline renderer
-nix flake check                      # unit-tests, docs-metaschema, docs-golden
+nix flake check                      # unit-tests, docs-metaschema, docs-golden,
+                                     # and unit-tests-tsan on Linux
 ```
 
 - `unit-tests`: the pure layers, the document builders against their goldens,
   and the renderer in-process.
+- `unit-tests-tsan` (Linux only): the same suite under ThreadSanitizer. nix
+  clang's TSan runtime crashes at startup on macOS, so there is no macOS twin.
 - `docs-metaschema`: the goldens against vendored OpenRPC, OpenAPI and AsyncAPI
   meta-schemas.
 - `docs-golden`: the renderer reproduces the goldens from `.lidl` files and from

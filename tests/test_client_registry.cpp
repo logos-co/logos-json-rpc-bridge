@@ -3,11 +3,13 @@
 
 #include <logos_test.h>
 
+#include <atomic>
 #include <chrono>
 #include <functional>
 #include <map>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "recycle_policy.h"
@@ -496,4 +498,39 @@ LOGOS_TEST(hub_add_fails_cleanly_once_the_registry_is_closed) {
     f.reg->close();
     LOGOS_ASSERT_FALSE(f.hub->add("m1", "ev", 7));
     LOGOS_ASSERT_EQ(f.hub->upstreamCount(), static_cast<size_t>(0));
+}
+
+// A loss can be reported off the delivery thread (discovery's revalidation runs on
+// the pump), and delivery reads the subscriber snapshot without the hub's lock. Only
+// a ThreadSanitizer build can see a mixed access there; any build checks the counts.
+LOGOS_TEST(hub_loss_racing_delivery_ends_each_subscriber_once) {
+    HubFixture f;
+    LOGOS_ASSERT_TRUE(f.hub->add("m1", "ev", 1));
+    const std::function<void(Json)> deliver = f.world.subs.at(0)->deliver;
+
+    std::atomic<bool> stop{false};
+    std::atomic<std::uint64_t> sent{0};
+    std::thread provider([&] {
+        const Json payload = Json::array({1});
+        while (!stop.load()) {
+            deliver(payload);
+            sent.fetch_add(1);
+        }
+    });
+    while (sent.load() == 0) std::this_thread::yield();
+
+    // No asserts until the provider is joined: a throw here would leave it running.
+    constexpr std::uint64_t kRounds = 1000;
+    bool added = true;
+    for (std::uint64_t id = 2; id <= kRounds; ++id) {
+        f.hub->notifyLost("m1", "ev", reason::kProviderChanged);
+        added = f.hub->add("m1", "ev", id) && added;
+    }
+    stop.store(true);
+    provider.join();
+
+    LOGOS_ASSERT_TRUE(added);
+    LOGOS_ASSERT_EQ(f.lost.size(), static_cast<size_t>(kRounds - 1));
+    for (std::uint64_t id = 1; id < kRounds; ++id)
+        LOGOS_ASSERT_EQ(f.lost[id - 1], std::to_string(id) + ":ev:provider_changed");
 }
