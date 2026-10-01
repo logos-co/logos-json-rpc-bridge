@@ -234,6 +234,9 @@ LOGOS_TEST(shared_components_have_the_wire_shapes) {
     LOGOS_ASSERT_EQ(rejection["properties"].size(), static_cast<size_t>(3));
     // A string, not an enum, so a future code still validates.
     LOGOS_ASSERT_FALSE(rejection["properties"]["code"].contains("enum"));
+    const std::string codes = rejection["properties"]["code"]["description"].get<std::string>();
     for (const char* code : {"dispatch_failed", "invalid_args", "unknown_method"})
-        LOGOS_ASSERT_CONTAINS(rejection["properties"]["code"]["description"].get<std::string>(), code);
+        LOGOS_ASSERT_CONTAINS(codes, code);
+    // unknown_method is folded into the bridge's not-found, so it never arrives as a result.
+    LOGOS_ASSERT_CONTAINS(codes, "-32601");
 }

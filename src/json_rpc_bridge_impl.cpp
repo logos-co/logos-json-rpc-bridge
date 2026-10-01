@@ -610,6 +610,11 @@ void BridgeCore::dispatchCall(const nlohmann::json& id, const CallTarget& t,
                     batch->fill(slot, makeError(id, mapCallError(e.code, e.message)));
                     return;
                 }
+                // The provider has no such method: the same bytes as every other not-found.
+                if (isUnknownMethodRefusal(value)) {
+                    batch->fill(slot, makeError(id, notFound()));
+                    return;
+                }
                 // An application-level failure is a SUCCESSFUL call: the
                 // payload goes in `result` untouched, never promoted to an
                 // error. See error_map.h.

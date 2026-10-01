@@ -358,9 +358,10 @@ inline nlohmann::json providerRejectionSchema() {
         {"properties",
          {{"code", {{"type", "string"},
                     {"description", "Known codes: dispatch_failed (the argument values were "
-                                    "refused), invalid_args (wrong argument count), "
-                                    "unknown_method (reserved; not emitted yet). Treat any other "
-                                    "code as a refusal too."}}},
+                                    "refused) and invalid_args (wrong argument count). Treat any "
+                                    "other code as a refusal too. unknown_method (no method by "
+                                    "that name) never arrives here: the bridge answers it with "
+                                    "the -32601 MethodNotFound error."}}},
           {"message", {{"type", "string"}}},
           {"origin", {{"type", "string"}, {"description", "The module that refused."}}}}},
         {"required", {"code", "message", "origin"}},

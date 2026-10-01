@@ -346,7 +346,9 @@ failure becomes a JSON-RPC error. A module returning
 `{success:false, error:"..."}` *answered the call*, and its payload arrives in
 `result` untouched. The bridge never inspects a result and promotes it. The same
 holds for a `ProviderRejection` (`{code, message, origin}`), which a provider
-returns when it refuses the arguments.
+returns when it refuses the arguments. The one exception is a provider's
+`unknown_method` refusal: it says the method does not exist, so the bridge
+answers it with the same `-32601` as any other unknown method.
 
 **Denial blocks calls; the contract is public.** Not-loaded, not-exposed,
 denied-by-config and does-not-exist calls all produce a byte-identical `-32601`,
