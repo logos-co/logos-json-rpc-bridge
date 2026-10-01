@@ -24,7 +24,8 @@
 // domain or application failure defined by the selected response schema MUST be
 // returned in response-ok.result and MUST NOT be converted to
 // response-err"), and StdLogosResult having `success` and `error` members makes
-// the mistake an easy one to reintroduce. Do not inspect a result payload here.
+// the mistake an easy one to reintroduce. Do not inspect a result payload here,
+// with ONE exception: a provider's unknown_method refusal is notFound() (below).
 
 #include <string>
 #include <vector>
@@ -123,6 +124,9 @@ inline MappedError notFound() {
 // The first version of this function passed the upstream message through for
 // timeouts, which the "never echoed" unit test caught: a module's own error text
 // routinely carries nix store paths, socket paths and instance ids.
+// A provider's own refusals (dispatch_failed, unknown_method) arrive as RESULTS
+// (logos_protocol.h); they are mapped too, as the spec's INVALID_PARAMS and
+// METHOD_NOT_FOUND, for when one arrives as a CallError.
 inline MappedError mapCallError(const std::string& code, const std::string& /*message*/) {
     if (code == "timeout")
         return {kTimeout, LogosErrorCode::Timeout, "upstream call timed out"};
@@ -134,9 +138,21 @@ inline MappedError mapCallError(const std::string& code, const std::string& /*me
         return {kUnauthorized, LogosErrorCode::NotAuthorised, "not authorised"};
     if (code == "call_failed")
         return {kModuleError, LogosErrorCode::ModuleError, "call could not be dispatched"};
-    if (code == "invalid_args" || code == "invalid_arg")
+    if (code == "invalid_args" || code == "invalid_arg" || code == "dispatch_failed")
         return {kInvalidParams, LogosErrorCode::InvalidParams, "invalid params"};
+    if (code == "unknown_method")
+        return notFound();
     return {kInternalError, LogosErrorCode::ModuleError, "upstream call failed"};
+}
+
+// A provider refuses a method name it does not have with this object as the call's
+// RESULT. Matched as narrowly as the SDKs' detectors, so a map return stays data.
+inline bool isUnknownMethodRefusal(const nlohmann::json& v) {
+    if (!v.is_object() || v.size() != 3) return false;
+    const auto code = v.find("code"), message = v.find("message"), origin = v.find("origin");
+    if (code == v.end() || message == v.end() || origin == v.end()) return false;
+    if (!code->is_string() || !message->is_string() || !origin->is_string()) return false;
+    return code->get<std::string>() == "unknown_method";
 }
 
 // Bad params, in the spec's shape: logos.invalid_params_detail = {reason,

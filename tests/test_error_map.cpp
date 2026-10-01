@@ -31,6 +31,19 @@ const std::vector<std::string> kShippedCodes = {
     "invalid_arg",
 };
 
+// A provider's own refusals, the closed set the SDKs' detectors fold. They arrive as
+// RESULTS (logos_protocol.h), but must still map specifically as CallError codes.
+const std::vector<std::string> kRefusalCodes = {
+    "dispatch_failed",
+    "invalid_args",
+    "unknown_method",
+};
+
+nlohmann::json refusal(const char* code) {
+    return nlohmann::json{
+        {"code", code}, {"message", "unknown method 'add'"}, {"origin", "calc_module"}};
+}
+
 } // namespace
 
 LOGOS_TEST(every_shipped_call_error_code_maps_to_something_specific) {
@@ -48,6 +61,42 @@ LOGOS_TEST(each_shipped_code_maps_to_a_distinct_enough_answer) {
     LOGOS_ASSERT_EQ(mapCallError("unauthorized", "").jsonRpcCode, static_cast<int>(kUnauthorized));
     LOGOS_ASSERT_EQ(mapCallError("call_failed", "").jsonRpcCode, static_cast<int>(kModuleError));
     LOGOS_ASSERT_EQ(mapCallError("invalid_args", "").jsonRpcCode, static_cast<int>(kInvalidParams));
+}
+
+// The bridge's own not-found, byte for byte: an absent method must read like a denied one.
+LOGOS_TEST(unknown_method_is_the_not_found_answer) {
+    const MappedError e = mapCallError("unknown_method", "unknown method 'add'");
+    LOGOS_ASSERT_EQ(e.jsonRpcCode, static_cast<int>(kMethodNotFound));
+    LOGOS_ASSERT_EQ(e.toJson().dump(), notFound().toJson().dump());
+}
+
+// dispatch_failed refuses the argument VALUES: the spec's INVALID_PARAMS, like invalid_args.
+LOGOS_TEST(dispatch_failed_is_invalid_params_like_invalid_args) {
+    LOGOS_ASSERT_EQ(mapCallError("dispatch_failed", "").jsonRpcCode, static_cast<int>(kInvalidParams));
+    LOGOS_ASSERT_EQ(mapCallError("dispatch_failed", "").toJson().dump(),
+                    mapCallError("invalid_args", "").toJson().dump());
+}
+
+// The refusal arrives as the call's RESULT. Only its exact shape is promoted to an
+// error; anything else, the other refusal codes included, stays a result.
+LOGOS_TEST(only_an_exact_unknown_method_refusal_is_promoted) {
+    LOGOS_ASSERT_TRUE(isUnknownMethodRefusal(refusal("unknown_method")));
+    for (const char* code : {"dispatch_failed", "invalid_args", "something_new", ""})
+        LOGOS_ASSERT_FALSE(isUnknownMethodRefusal(refusal(code)));
+
+    nlohmann::json extra = refusal("unknown_method");
+    extra["detail"] = "x";
+    LOGOS_ASSERT_FALSE(isUnknownMethodRefusal(extra));
+    nlohmann::json renamed = refusal("unknown_method");
+    renamed.erase("origin");
+    renamed["module"] = "calc_module";
+    LOGOS_ASSERT_FALSE(isUnknownMethodRefusal(renamed));
+    nlohmann::json nonString = refusal("unknown_method");
+    nonString["origin"] = nullptr;
+    LOGOS_ASSERT_FALSE(isUnknownMethodRefusal(nonString));
+    for (const char* text : {"null", "true", R"("unknown_method")", "{}",
+                             R"(["unknown_method","unknown method 'add'","calc_module"])"})
+        LOGOS_ASSERT_FALSE(isUnknownMethodRefusal(nlohmann::json::parse(text)));
 }
 
 // The set is strings rather than an enum precisely so it can grow, so a newer
@@ -93,11 +142,12 @@ LOGOS_TEST(the_not_found_answer_is_a_single_constant) {
 LOGOS_TEST(upstream_detail_is_never_echoed_into_the_response) {
     const std::string leaky =
         "failed to open /nix/store/abc123-module/lib/x.dylib via /run/user/501/logos.sock";
-    for (const std::string& code : kShippedCodes) {
-        const std::string rendered = mapCallError(code, leaky).toJson().dump();
-        LOGOS_ASSERT_TRUE(rendered.find("/nix/store") == std::string::npos);
-        LOGOS_ASSERT_TRUE(rendered.find("logos.sock") == std::string::npos);
-    }
+    for (const std::vector<std::string>* codes : {&kShippedCodes, &kRefusalCodes})
+        for (const std::string& code : *codes) {
+            const std::string rendered = mapCallError(code, leaky).toJson().dump();
+            LOGOS_ASSERT_TRUE(rendered.find("/nix/store") == std::string::npos);
+            LOGOS_ASSERT_TRUE(rendered.find("logos.sock") == std::string::npos);
+        }
 }
 
 // invalid_params_detail is permitted ONLY alongside INVALID_PARAMS, and carries
@@ -119,6 +169,7 @@ LOGOS_TEST(invalid_params_detail_rides_only_with_invalid_params) {
 LOGOS_TEST(the_error_catalog_covers_every_code_the_bridge_emits) {
     std::set<int> produced;
     for (const std::string& code : kShippedCodes) produced.insert(mapCallError(code, "").jsonRpcCode);
+    for (const std::string& code : kRefusalCodes) produced.insert(mapCallError(code, "").jsonRpcCode);
     produced.insert(mapCallError("something_new", "").jsonRpcCode);
     produced.insert(notFound().jsonRpcCode);
     produced.insert(invalidParamsJson("schema-mismatch", "x")["code"].get<int>());
